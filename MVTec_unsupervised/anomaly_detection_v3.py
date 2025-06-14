@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import random
 import cv2
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List, Tuple
 
 # ==================== Loss Functions Module ====================
 # ==================== Base Loss Class ====================
@@ -44,68 +44,460 @@ class MSELoss(BaseLoss):
         return F.mse_loss(pred, target)
 
 class SSIMLoss(BaseLoss):
-    """Structural Similarity Index Loss"""
-    def __init__(self, weight: float = 1.0, window_size: int = 11, size_average: bool = True):
+    """結構相似性指標損失函數
+    
+    本類別實現了 Wang et al. (2004) 提出的結構相似性指標 (SSIM) 損失函數。
+    SSIM 透過綜合評估亮度、對比度和結構三個維度的相似性來衡量圖像品質，
+    相較於傳統的均方誤差損失，SSIM 更符合人類視覺系統的感知特性。
+    
+    本實現遵循模組化損失函數框架的設計規範，確保能夠與其他損失函數
+    無縫組合使用。所有批次樣本的損失值會自動聚合為單一標量值。
+    
+    參數說明：
+        weight (float): 損失函數在總體損失中的權重係數。預設值為 1.0
+        window_size (int): 高斯窗口的大小，必須為奇數。建議使用 11 或更大的值
+                          以獲得穩定的結果。預設值為 11
+        sigma (float): 高斯核的標準差，控制窗口權重的分布。較大的值會產生
+                      更平滑的權重分布。預設值為 1.5
+    """
+    
+    def __init__(self, 
+                 weight: float = 1.0, 
+                 window_size: int = 11, 
+                 sigma: float = 1.5):
         super().__init__(weight)
-        self.window_size = window_size
-        self.size_average = size_average
-        self.channel = 1
-        self.window = self._create_window(window_size, self.channel)
         
-    def _gaussian(self, window_size: int, sigma: float = 1.5) -> torch.Tensor:
-        """Create 1D Gaussian kernel"""
-        gauss = torch.Tensor([np.exp(-(x - window_size//2)**2 / (2 * sigma**2)) 
-                             for x in range(window_size)])
-        return gauss / gauss.sum()
+        # 參數驗證確保輸入值的合理性
+        if window_size % 2 == 0:
+            raise ValueError(f"Window size must be odd, got {window_size}")
+        if window_size < 3:
+            raise ValueError(f"Window size must be at least 3, got {window_size}")
+        if sigma <= 0:
+            raise ValueError(f"Sigma must be positive, got {sigma}")
+        
+        self.window_size = window_size
+        self.sigma = sigma
+        self.channel = None  # 將根據輸入動態設定
+        
+        # 預先創建單通道高斯窗口並註冊為緩衝區
+        # register_buffer 的使用確保了窗口在模型保存、載入和設備轉移時
+        # 能夠得到正確的處理，避免手動管理這些操作
+        initial_window = self._create_window(window_size, 1)
+        self.register_buffer('window', initial_window, persistent=False)
+        
+    def _gaussian_1d(self, window_size: int, sigma: float) -> torch.Tensor:
+        """生成一維高斯核
+        
+        根據高斯分布公式創建歸一化的一維核心，該核心將用於
+        構建二維高斯窗口。歸一化確保權重總和為 1。
+        
+        參數：
+            window_size: 核心的大小
+            sigma: 高斯分布的標準差
+            
+        返回：
+            torch.Tensor: 歸一化的一維高斯核
+        """
+        coords = torch.arange(window_size, dtype=torch.float32)
+        coords -= window_size // 2
+        
+        gaussian = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+        return gaussian / gaussian.sum()
     
     def _create_window(self, window_size: int, channel: int) -> torch.Tensor:
-        """Create 2D Gaussian window"""
-        _1D_window = self._gaussian(window_size).unsqueeze(1)
-        _2D_window = _1D_window.mm(_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
-        window = _2D_window.expand(channel, 1, window_size, window_size).contiguous()
-        return window
+        """創建二維高斯窗口
+        
+        透過一維高斯核的外積生成二維高斯窗口。這種方法利用了
+        高斯函數的可分離性，提高了計算效率。生成的窗口會根據
+        需要擴展到指定的通道數。
+        
+        參數：
+            window_size: 窗口的大小（高度和寬度相同）
+            channel: 需要的通道數
+            
+        返回：
+            torch.Tensor: 形狀為 (channel, 1, window_size, window_size) 的高斯窗口
+        """
+        gaussian_1d = self._gaussian_1d(window_size, self.sigma)
+        gaussian_2d = gaussian_1d.unsqueeze(1) @ gaussian_1d.unsqueeze(0)
+        gaussian_2d = gaussian_2d.unsqueeze(0).unsqueeze(0)
+        
+        # 擴展到指定通道數，每個通道使用相同的權重
+        window = gaussian_2d.expand(channel, 1, window_size, window_size)
+        return window.contiguous()
+    
+    def _ssim(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        """計算結構相似性指標
+        
+        實現 SSIM 的核心計算邏輯。該方法計算輸入圖像對的局部統計量，
+        並應用 SSIM 公式來評估相似性。計算過程包括局部均值、方差和
+        協方差的估計，這些統計量分別對應於亮度、對比度和結構的相似性。
+        
+        參數：
+            x: 第一張圖像張量，形狀為 [N, C, H, W]
+            y: 第二張圖像張量，形狀為 [N, C, H, W]
+            
+        返回：
+            torch.Tensor: 每個批次樣本的 SSIM 值，形狀為 [N]，值域為 [0, 1]
+        """
+        # SSIM 穩定性常數，基於原始論文的建議值
+        # 這些常數防止分母為零，並控制各成分的相對重要性
+        C1 = (0.01 ** 2)
+        C2 = (0.03 ** 2)
+        
+        # 使用高斯加權計算局部均值
+        # groups 參數確保每個通道獨立進行卷積運算
+        mu_x = F.conv2d(x, self.window, padding=self.window_size//2, groups=self.channel)
+        mu_y = F.conv2d(y, self.window, padding=self.window_size//2, groups=self.channel)
+        
+        # 計算均值的平方和乘積，用於後續計算
+        mu_x_sq = mu_x ** 2
+        mu_y_sq = mu_y ** 2
+        mu_xy = mu_x * mu_y
+        
+        # 計算局部方差和協方差
+        # 使用公式：Var(X) = E[X²] - E[X]²
+        sigma_x_sq = F.conv2d(x ** 2, self.window, padding=self.window_size//2, groups=self.channel) - mu_x_sq
+        sigma_y_sq = F.conv2d(y ** 2, self.window, padding=self.window_size//2, groups=self.channel) - mu_y_sq
+        sigma_xy = F.conv2d(x * y, self.window, padding=self.window_size//2, groups=self.channel) - mu_xy
+        
+        # 應用 SSIM 公式
+        # SSIM = (2μxμy + C1)(2σxy + C2) / (μx² + μy² + C1)(σx² + σy² + C2)
+        luminance_contrast = (2 * mu_xy + C1) * (2 * sigma_xy + C2)
+        denominator = (mu_x_sq + mu_y_sq + C1) * (sigma_x_sq + sigma_y_sq + C2)
+        
+        ssim_map = luminance_contrast / denominator
+        
+        # 對每個樣本的空間和通道維度取平均，保持批次維度
+        # 這確保了批次中每個樣本都能獲得獨立的梯度信號
+        return ssim_map.mean(dim=[1, 2, 3])
     
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """Calculate SSIM loss"""
-        # Ensure window is on the same device
-        if pred.is_cuda:
-            self.window = self.window.cuda(pred.get_device())
-        self.window = self.window.type_as(pred)
+        """計算 SSIM 損失
         
-        # Update window if channel count changes
+        本方法是損失函數的主要介面，負責計算預測圖像與目標圖像之間的
+        SSIM 損失。損失值定義為 1 - SSIM，確保完美匹配時損失為 0，
+        完全不匹配時損失接近 1。
+        
+        參數：
+            pred: 預測圖像張量，形狀必須為 [N, C, H, W]
+            target: 目標圖像張量，形狀必須為 [N, C, H, W]
+            
+        返回：
+            torch.Tensor: 標量損失值，代表整個批次的平均損失
+            
+        異常：
+            ValueError: 當輸入張量的維度不是 4 或形狀不匹配時
+        """
+        # 輸入驗證確保張量格式正確
+        if pred.dim() != 4 or target.dim() != 4:
+            raise ValueError(f"Expected 4D tensors, got {pred.dim()}D and {target.dim()}D")
+        
+        if pred.shape != target.shape:
+            raise ValueError(f"Input shapes must match, got {pred.shape} and {target.shape}")
+        
+        # 動態更新高斯窗口以匹配輸入的通道數
         channel = pred.size(1)
-        if channel != self.channel:
-            self.window = self._create_window(self.window_size, channel)
+        if self.channel != channel:
             self.channel = channel
-            if pred.is_cuda:
-                self.window = self.window.cuda(pred.get_device())
-            self.window = self.window.type_as(pred)
+            new_window = self._create_window(self.window_size, channel)
+            self.window = new_window.to(device=pred.device, dtype=pred.dtype)
         
-        return 1 - self._ssim(pred, target)
+        # 確保窗口與輸入張量在相同的設備和資料類型
+        if self.window.device != pred.device or self.window.dtype != pred.dtype:
+            self.window = self.window.to(device=pred.device, dtype=pred.dtype)
+        
+        # 計算 SSIM 值並轉換為損失
+        ssim_values = self._ssim(pred, target)
+        loss = 1.0 - ssim_values
+        
+        # 返回批次平均損失（標量），確保與其他損失函數的介面一致
+        return loss.mean()
     
-    def _ssim(self, img1: torch.Tensor, img2: torch.Tensor) -> torch.Tensor:
-        """Calculate SSIM"""
-        C1 = 0.01**2
-        C2 = 0.03**2
+    def compute_per_sample_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """計算每個樣本的個別損失值
         
-        mu1 = F.conv2d(img1, self.window, padding=self.window_size//2, groups=self.channel)
-        mu2 = F.conv2d(img2, self.window, padding=self.window_size//2, groups=self.channel)
+        此輔助方法提供了獲取批次中每個樣本詳細損失資訊的途徑，
+        適用於分析、調試或需要樣本級別損失資訊的場景。該方法
+        不會影響主要的訓練流程。
+        
+        參數：
+            pred: 預測圖像張量，形狀為 [N, C, H, W]
+            target: 目標圖像張量，形狀為 [N, C, H, W]
+            
+        返回：
+            torch.Tensor: 每個樣本的損失值，形狀為 [N]
+        """
+        with torch.no_grad():
+            # 確保設備和窗口設定正確
+            if pred.size(1) != self.channel:
+                self.forward(pred, target)  # 觸發窗口更新
+            
+            ssim_values = self._ssim(pred, target)
+            return 1.0 - ssim_values
+    
+    def __repr__(self) -> str:
+        """提供類別的字串表示
+        
+        返回包含所有關鍵參數的描述性字串，便於調試和日誌記錄。
+        """
+        return (f"{self.__class__.__name__}("
+                f"weight={self.weight}, "
+                f"window_size={self.window_size}, "
+                f"sigma={self.sigma})")
+
+
+class MultiScaleSSIMLoss(BaseLoss):
+    """Multi-Scale Structural Similarity Index Loss
+    
+    This loss function computes SSIM at multiple scales to capture both 
+    fine-grained details and global structure. It's particularly effective
+    for images where both local and global features are important.
+    
+    Args:
+        weight (float): Overall weight for this loss component. Default: 1.0
+        scales (int): Number of scales to use. Default: 3
+        scale_weights (Optional[List[float]]): Weights for each scale. 
+            If None, uses default weights based on scale count.
+        sigma (float): Standard deviation for Gaussian kernel. Default: 1.5
+        K1 (float): Stability constant for luminance. Default: 0.01
+        K2 (float): Stability constant for contrast. Default: 0.03
+        downsample_method (str): Method for downsampling ('avg_pool' or 'gaussian'). 
+            Default: 'avg_pool'
+    """
+    
+    def __init__(self, 
+                 weight: float = 1.0,
+                 scales: int = 3,
+                 scale_weights: Optional[List[float]] = None,
+                 sigma: float = 1.5,
+                 K1: float = 0.01,
+                 K2: float = 0.03,
+                 downsample_method: str = 'avg_pool'):
+        super().__init__(weight)
+        
+        self.scales = scales
+        self.sigma = sigma
+        self.K1 = K1
+        self.K2 = K2
+        self.downsample_method = downsample_method
+        
+        # Initialize scale weights
+        if scale_weights is not None:
+            assert len(scale_weights) == scales, \
+                f"Number of scale weights ({len(scale_weights)}) must match scales ({scales})"
+            self.scale_weights = torch.tensor(scale_weights, dtype=torch.float32)
+        else:
+            self.scale_weights = self._get_default_weights(scales)
+        
+        # Normalize weights
+        self.scale_weights = self.scale_weights / self.scale_weights.sum()
+        
+        # Pre-compute window sizes for each scale
+        self.window_sizes = [max(5, 11 - 2 * scale) for scale in range(scales)]
+        
+        # Cache for Gaussian windows
+        self._window_cache = {}
+    
+    def _get_default_weights(self, scales: int) -> torch.Tensor:
+        """Generate default weights for different numbers of scales
+        
+        These weights are based on empirical studies showing human visual
+        system's sensitivity to different frequency bands.
+        """
+        weight_dict = {
+            2: [0.4, 0.6],
+            3: [0.0448, 0.2856, 0.3001],
+            4: [0.0244, 0.1638, 0.2418, 0.3148],
+            5: [0.0131, 0.0903, 0.1589, 0.2515, 0.3141]
+        }
+        
+        if scales in weight_dict:
+            return torch.tensor(weight_dict[scales], dtype=torch.float32)
+        else:
+            # For custom scale counts, use exponentially increasing weights
+            weights = torch.exp(torch.linspace(0, 2, scales))
+            return weights / weights.sum()
+    
+    def _create_gaussian_kernel(self, window_size: int, sigma: float) -> torch.Tensor:
+        """Create 1D Gaussian kernel"""
+        coords = torch.arange(window_size, dtype=torch.float32)
+        coords -= window_size // 2
+        
+        g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+        g /= g.sum()
+        
+        return g
+    
+    def _get_gaussian_window(self, window_size: int, channel: int, 
+                           device: torch.device) -> torch.Tensor:
+        """Get or create Gaussian window for convolution
+        
+        Uses caching to avoid recreating windows repeatedly.
+        """
+        cache_key = (window_size, channel, device)
+        
+        if cache_key not in self._window_cache:
+            # Create 1D Gaussian
+            gaussian_1d = self._create_gaussian_kernel(window_size, self.sigma)
+            
+            # Create 2D Gaussian window
+            gaussian_2d = gaussian_1d.unsqueeze(1) @ gaussian_1d.unsqueeze(0)
+            gaussian_2d = gaussian_2d.unsqueeze(0).unsqueeze(0)
+            
+            # Expand to match channel count
+            window = gaussian_2d.expand(channel, 1, window_size, window_size)
+            window = window.to(device)
+            
+            self._window_cache[cache_key] = window
+        
+        return self._window_cache[cache_key]
+    
+    def _compute_ssim_components(self, x: torch.Tensor, y: torch.Tensor, 
+                                window_size: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute SSIM components: luminance * contrast_structure and contrast_structure
+        
+        Returns:
+            Tuple of (l * cs, cs) where l is luminance and cs is contrast-structure
+        """
+        channel = x.size(1)
+        window = self._get_gaussian_window(window_size, channel, x.device)
+        
+        # Constants for stability
+        C1 = (self.K1 ** 2)
+        C2 = (self.K2 ** 2)
+        
+        # Compute local means
+        mu1 = F.conv2d(x, window, padding=window_size//2, groups=channel)
+        mu2 = F.conv2d(y, window, padding=window_size//2, groups=channel)
         
         mu1_sq = mu1.pow(2)
         mu2_sq = mu2.pow(2)
         mu1_mu2 = mu1 * mu2
         
-        sigma1_sq = F.conv2d(img1*img1, self.window, padding=self.window_size//2, groups=self.channel) - mu1_sq
-        sigma2_sq = F.conv2d(img2*img2, self.window, padding=self.window_size//2, groups=self.channel) - mu2_sq
-        sigma12 = F.conv2d(img1*img2, self.window, padding=self.window_size//2, groups=self.channel) - mu1_mu2
+        # Compute local variances and covariance
+        sigma1_sq = F.conv2d(x * x, window, padding=window_size//2, groups=channel) - mu1_sq
+        sigma2_sq = F.conv2d(y * y, window, padding=window_size//2, groups=channel) - mu2_sq
+        sigma12 = F.conv2d(x * y, window, padding=window_size//2, groups=channel) - mu1_mu2
         
-        ssim_map = ((2*mu1_mu2 + C1)*(2*sigma12 + C2))/((mu1_sq + mu2_sq + C1)*(sigma1_sq + sigma2_sq + C2))
+        # Compute SSIM components
+        luminance = (2 * mu1_mu2 + C1) / (mu1_sq + mu2_sq + C1)
+        contrast_structure = (2 * sigma12 + C2) / (sigma1_sq + sigma2_sq + C2)
         
-        if self.size_average:
-            return ssim_map.mean()
+        # Return mean values across spatial dimensions
+        # Keep batch dimension, only average over spatial dimensions (H, W)
+        return (luminance * contrast_structure).mean(dim=[2, 3]), contrast_structure.mean(dim=[2, 3])
+    
+    def _downsample(self, x: torch.Tensor) -> torch.Tensor:
+        """Downsample image by factor of 2
+        
+        Uses either average pooling or Gaussian filtering based on configuration.
+        """
+        if self.downsample_method == 'avg_pool':
+            return F.avg_pool2d(x, kernel_size=2, stride=2)
+        elif self.downsample_method == 'gaussian':
+            # Apply Gaussian blur before downsampling
+            kernel_size = 5
+            sigma = 1.0
+            channel = x.size(1)
+            
+            # Create Gaussian kernel
+            gaussian_1d = self._create_gaussian_kernel(kernel_size, sigma)
+            gaussian_2d = gaussian_1d.unsqueeze(1) @ gaussian_1d.unsqueeze(0)
+            gaussian_kernel = gaussian_2d.unsqueeze(0).unsqueeze(0)
+            gaussian_kernel = gaussian_kernel.expand(channel, 1, kernel_size, kernel_size)
+            gaussian_kernel = gaussian_kernel.to(x.device)
+            
+            # Apply Gaussian blur
+            x_blurred = F.conv2d(x, gaussian_kernel, padding=kernel_size//2, groups=channel)
+            
+            # Downsample
+            return x_blurred[:, :, ::2, ::2]
         else:
-            return ssim_map.mean(1).mean(1).mean(1)
-
+            raise ValueError(f"Unknown downsample method: {self.downsample_method}")
+    
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Compute Multi-Scale SSIM Loss
+        
+        Args:
+            pred: Predicted image tensor of shape (N, C, H, W)
+            target: Target image tensor of shape (N, C, H, W)
+            
+        Returns:
+            MS-SSIM loss value (1 - MS-SSIM)
+        """
+        device = pred.device
+        
+        # Move scale weights to correct device if needed
+        if self.scale_weights.device != device:
+            self.scale_weights = self.scale_weights.to(device)
+        
+        # Lists to store values at each scale
+        mcs_values = []  # Contrast-structure values
+        final_ssim = None  # Full SSIM at finest scale
+        
+        # Process each scale
+        for scale in range(self.scales):
+            # Use appropriate window size for this scale
+            window_size = self.window_sizes[scale]
+            
+            # Compute SSIM components
+            if scale == self.scales - 1:
+                # At finest scale, we need the full SSIM
+                ssim_val, _ = self._compute_ssim_components(pred, target, window_size)
+                final_ssim = ssim_val
+            else:
+                # At other scales, we only need contrast-structure
+                _, cs_val = self._compute_ssim_components(pred, target, window_size)
+                mcs_values.append(cs_val)
+            
+            # Downsample for next scale (except at last scale)
+            if scale < self.scales - 1:
+                pred = self._downsample(pred)
+                target = self._downsample(target)
+                
+                # Check if images are getting too small
+                if pred.size(-1) < window_size or pred.size(-2) < window_size:
+                    # If images are too small, stop and adjust weights
+                    remaining_scales = self.scales - scale - 1
+                    if remaining_scales > 0:
+                        # Redistribute remaining weight to current scale
+                        weight_sum = self.scale_weights[scale:].sum()
+                        self.scale_weights = self.scale_weights[:scale+1]
+                        self.scale_weights[-1] = weight_sum
+                        self.scale_weights = self.scale_weights / self.scale_weights.sum()
+                    break
+        
+        # Compute MS-SSIM
+        if len(mcs_values) == 0:
+            # Only one scale was used
+            ms_ssim = final_ssim
+        else:
+            # Combine contrast-structure values with final SSIM
+            mcs_stack = torch.stack(mcs_values)
+            
+            # Apply weights to contrast-structure values
+            # mcs_stack shape: [num_scales, batch_size]
+            # weights shape: [num_scales, 1] for broadcasting
+            mcs_weighted = torch.prod(
+                torch.pow(mcs_stack, self.scale_weights[:len(mcs_values)].unsqueeze(-1)),
+                dim=0  # Product over scales, keep batch dimension
+            )
+            
+            # Combine with final SSIM
+            ms_ssim = mcs_weighted * (final_ssim ** self.scale_weights[-1])
+        
+        # Return loss (1 - MS-SSIM)
+        # Average over batch dimension to get scalar loss
+        return torch.mean(1.0 - ms_ssim)
+    
+    def __repr__(self) -> str:
+        """String representation for debugging"""
+        return (f"MultiScaleSSIMLoss(weight={self.weight}, scales={self.scales}, "
+                f"scale_weights={self.scale_weights.tolist()}, "
+                f"downsample_method={self.downsample_method})")
+        
+        
 class SobelGradientLoss(BaseLoss):
     """Sobel gradient loss for edge preservation"""
     def __init__(self, weight: float = 1.0):
@@ -122,7 +514,7 @@ class SobelGradientLoss(BaseLoss):
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         """Calculate Sobel gradient loss"""
         # Expand kernels to match input channels
-        batch_size, channels = pred.shape[:2]
+        channels = pred.shape[1]
         sobel_x = self.sobel_x.repeat(channels, 1, 1, 1)
         sobel_y = self.sobel_y.repeat(channels, 1, 1, 1)
         
@@ -230,7 +622,7 @@ class FocalFrequencyLoss(nn.Module):
         loss = weight_matrix * freq_distance
         return torch.mean(loss)
 
-    def forward(self, pred, target, matrix=None, **kwargs):
+    def forward(self, pred, target, matrix=None):
         """Forward function to calculate focal frequency loss.
 
         Args:
@@ -869,7 +1261,7 @@ def main():
                 'weight': 0.3,
                 'params': {
                     'window_size': 11,  # Gaussian window size, must be odd
-                    'size_average': True  # Whether to average
+                    'sigma': 1.5  # Gaussian kernel standard deviation
                 }
             },
             
