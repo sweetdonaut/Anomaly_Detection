@@ -10,7 +10,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
-from sklearn.metrics import roc_auc_score, average_precision_score
+# from sklearn.metrics import roc_auc_score, average_precision_score  # Not needed without ground truth
 import random
 import cv2
 
@@ -519,72 +519,56 @@ class LatentSpaceAnalyzer:
             
             return score
 
-# ==================== Evaluation Metrics ====================
-class AnomalyEvaluator:
-    """Evaluate anomaly detection performance"""
-    def __init__(self):
-        self.predictions = []
-        self.ground_truths = []
-        self.anomaly_maps = []
-        self.ground_truth_masks = []
+# ==================== Anomaly Visualization ====================
+class AnomalyVisualizer:
+    """Visualize anomaly detection results without ground truth"""
+    def __init__(self, save_dir='./results'):
+        self.save_dir = save_dir
+        os.makedirs(save_dir, exist_ok=True)
     
-    def add_batch(self, anomaly_scores, labels, anomaly_maps=None, gt_masks=None):
-        """Add batch results"""
-        self.predictions.extend(anomaly_scores.cpu().numpy())
-        self.ground_truths.extend(labels.cpu().numpy())
+    def visualize_reconstruction(self, original, reconstruction, anomaly_map, 
+                               save_name=None, show=True):
+        """Visualize original, reconstruction, and anomaly heatmap"""
+        plt.figure(figsize=(15, 5))
         
-        if anomaly_maps is not None:
-            self.anomaly_maps.extend(anomaly_maps.cpu().numpy())
-        if gt_masks is not None:
-            self.ground_truth_masks.extend(gt_masks.cpu().numpy())
+        # Original image
+        plt.subplot(131)
+        plt.imshow(original.squeeze().cpu().numpy(), cmap='gray')
+        plt.title('Original Image')
+        plt.axis('off')
+        
+        # Reconstruction
+        plt.subplot(132)
+        plt.imshow(reconstruction.squeeze().cpu().numpy(), cmap='gray')
+        plt.title('Reconstruction')
+        plt.axis('off')
+        
+        # Anomaly heatmap
+        plt.subplot(133)
+        plt.imshow(anomaly_map, cmap='hot')
+        plt.title('Anomaly Heatmap')
+        plt.colorbar()
+        plt.axis('off')
+        
+        plt.tight_layout()
+        
+        if save_name:
+            plt.savefig(os.path.join(self.save_dir, save_name), dpi=150, bbox_inches='tight')
+        
+        if show:
+            plt.show()
+        else:
+            plt.close()
     
-    def compute_metrics(self):
-        """Compute AUROC, AP, and PRO metrics"""
-        metrics = {}
-        
-        # Image-level metrics
-        predictions = np.array(self.predictions)
-        ground_truths = np.array(self.ground_truths)
-        
-        # AUROC
-        metrics['auroc'] = roc_auc_score(ground_truths, predictions)
-        
-        # Average Precision
-        metrics['ap'] = average_precision_score(ground_truths, predictions)
-        
-        # Pixel-level PRO if available
-        if self.anomaly_maps and self.ground_truth_masks:
-            metrics['pro'] = self._compute_pro()
-        
-        return metrics
-    
-    def _compute_pro(self, integration_limit=0.3):
-        """Compute Per-Region Overlap (PRO) metric"""
-        # Simplified PRO calculation
-        pros = []
-        
-        for anomaly_map, gt_mask in zip(self.anomaly_maps, self.ground_truth_masks):
-            if gt_mask.max() == 0:  # Skip normal images
-                continue
-            
-            # Threshold anomaly map at various levels
-            thresholds = np.linspace(0, 1, 100)
-            overlaps = []
-            
-            for thresh in thresholds:
-                binary_map = anomaly_map > thresh
-                overlap = (binary_map & gt_mask).sum() / gt_mask.sum()
-                overlaps.append(overlap)
-            
-            # Integrate up to limit
-            pro = np.trapz(overlaps[:int(integration_limit * 100)], 
-                          thresholds[:int(integration_limit * 100)])
-            pros.append(pro)
-        
-        return np.mean(pros) if pros else 0
+    def save_anomaly_scores(self, scores, image_paths, save_name='anomaly_scores.txt'):
+        """Save anomaly scores to text file"""
+        with open(os.path.join(self.save_dir, save_name), 'w') as f:
+            f.write("Image Path\tAnomaly Score\n")
+            for path, score in zip(image_paths, scores):
+                f.write(f"{path}\t{score:.6f}\n")
 
 # ==================== Training Function ====================
-def train_anomaly_model(model, train_loader, val_loader, config):
+def train_anomaly_model(model, train_loader, config):
     """Train anomaly detection model"""
     device = config['device']
     model.to(device)
@@ -595,7 +579,8 @@ def train_anomaly_model(model, train_loader, val_loader, config):
     # Initialize loss function
     criterion = ModularLossFunction(**config['loss_config'])
     
-    best_val_loss = float('inf')
+    # Track training history
+    train_history = []
     
     for epoch in range(config['num_epochs']):
         # Training
@@ -638,33 +623,25 @@ def train_anomaly_model(model, train_loader, val_loader, config):
         for key in train_losses:
             train_losses[key] /= len(train_loader)
         
-        # Validation
-        model.eval()
-        val_loss = 0
-        
-        with torch.no_grad():
-            for batch in val_loader:
-                images, _ = batch
-                images = images.to(device)
-                
-                recon = model(images)
-                loss_dict = criterion(recon, images)
-                val_loss += loss_dict['total'].item()
-        
-        val_loss /= len(val_loader)
-        
         # Learning rate scheduling
         scheduler.step()
         
+        # Store history
+        train_history.append(train_losses['total'])
+        
         # Print progress
-        print(f"Epoch {epoch+1}: Train Loss: {train_losses['total']:.4f}, Val Loss: {val_loss:.4f}")
+        print(f"Epoch {epoch+1}: Train Loss: {train_losses['total']:.4f}")
         print(f"  Components - MSE: {train_losses['mse']:.4f}, SSIM: {train_losses['ssim']:.4f}, "
               f"Focal: {train_losses['focal_freq']:.4f}, Sobel: {train_losses['sobel']:.4f}")
         
-        # Save best model
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(model.state_dict(), f"{config['save_path']}/best_model.pth")
+        # Save checkpoint every 10 epochs
+        if (epoch + 1) % 10 == 0:
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'loss': train_losses['total'],
+            }, f"{config['save_path']}/checkpoint_epoch_{epoch+1}.pth")
     
     return model
 
@@ -713,7 +690,7 @@ def main():
     for category in categories:
         print(f"\nTraining on {category} category...")
         
-        # Create datasets
+        # Create training dataset
         train_dataset = MVTecDataset(
             '/Users/laiyongcheng/Desktop/autoencoder/', 
             category, 
@@ -723,61 +700,94 @@ def main():
             synthetic_anomaly_generator=SyntheticAnomalyGenerator() if config['use_synthetic_anomalies'] else None
         )
         
-        val_dataset = MVTecDataset(
-            '/Users/laiyongcheng/Desktop/autoencoder/', 
-            category, 
-            'test', 
-            transform
-        )
-        
-        # Create dataloaders
+        # Create dataloader
         train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], 
                                 shuffle=True, num_workers=4)
-        val_loader = DataLoader(val_dataset, batch_size=config['batch_size'], 
-                              shuffle=False, num_workers=4)
         
-        # Train model
-        model = train_anomaly_model(model, train_loader, val_loader, config)
+        # Train model (no validation set needed)
+        model = train_anomaly_model(model, train_loader, config)
         
         # Save final model
         torch.save(model.state_dict(), f"{config['save_path']}/{category}_final_model.pth")
         
-        # Evaluate model
-        print("\nEvaluating model...")
-        evaluator = AnomalyEvaluator()
-        latent_analyzer = LatentSpaceAnalyzer(model, config['device'])
+        # Test on any available test images (optional)
+        print("\nTesting on available images...")
         
-        # Fit latent space on normal data
-        normal_loader = DataLoader(
-            MVTecDataset('/Users/laiyongcheng/Desktop/autoencoder/', category, 'train', transform),
-            batch_size=config['batch_size'], shuffle=False
-        )
-        latent_analyzer.fit_normal_features(normal_loader)
-        
-        # Evaluate on test set
-        model.eval()
-        with torch.no_grad():
-            for batch in val_loader:
-                images, labels = batch
-                images = images.to(config['device'])
-                
-                # Reconstruction-based anomaly score
-                recon = model(images)
-                recon_error = torch.mean((images - recon) ** 2, dim=(1, 2, 3))
-                
-                # Latent space anomaly score
-                latent_scores = latent_analyzer.compute_anomaly_score(images)
-                
-                # Combined score
-                anomaly_scores = recon_error + 0.5 * latent_scores
-                
-                evaluator.add_batch(anomaly_scores, labels)
-        
-        # Compute metrics
-        metrics = evaluator.compute_metrics()
-        print(f"\nResults for {category}:")
-        print(f"AUROC: {metrics['auroc']:.4f}")
-        print(f"Average Precision: {metrics['ap']:.4f}")
+        # Check if test directory exists
+        test_path = Path('/Users/laiyongcheng/Desktop/autoencoder/') / category / 'test'
+        if test_path.exists():
+            print(f"Found test directory: {test_path}")
+            
+            # Create test dataset
+            test_dataset = MVTecDataset(
+                '/Users/laiyongcheng/Desktop/autoencoder/', 
+                category, 
+                'test', 
+                transform
+            )
+            
+            test_loader = DataLoader(test_dataset, batch_size=config['batch_size'], 
+                                   shuffle=False, num_workers=4)
+            
+            # Setup visualization
+            visualizer = AnomalyVisualizer(save_dir=f"{config['save_path']}/visualizations_{category}")
+            latent_analyzer = LatentSpaceAnalyzer(model, config['device'])
+            
+            # Fit latent space on normal training data
+            latent_analyzer.fit_normal_features(train_loader)
+            
+            # Process test images
+            model.eval()
+            anomaly_scores = []
+            
+            # Visualize a few examples
+            num_visualizations = min(10, len(test_dataset))
+            viz_count = 0
+            
+            with torch.no_grad():
+                for i, (batch, _) in enumerate(test_loader):
+                    images = batch.to(config['device'])
+                    
+                    # Get reconstruction
+                    recon = model(images)
+                    
+                    # Calculate anomaly scores
+                    recon_error = torch.mean((images - recon) ** 2, dim=(1, 2, 3))
+                    latent_scores = latent_analyzer.compute_anomaly_score(images)
+                    batch_anomaly_scores = recon_error + 0.5 * latent_scores
+                    
+                    # Store scores
+                    anomaly_scores.extend(batch_anomaly_scores.cpu().numpy())
+                    
+                    # Visualize some examples
+                    for j in range(images.size(0)):
+                        if viz_count < num_visualizations:
+                            # Generate anomaly heatmap
+                            diff = torch.abs(images[j] - recon[j])
+                            heatmap = diff.cpu().numpy()[0]
+                            heatmap = gaussian_filter(heatmap, sigma=2)
+                            
+                            # Normalize heatmap
+                            if heatmap.max() > heatmap.min():
+                                heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min())
+                            
+                            # Visualize
+                            visualizer.visualize_reconstruction(
+                                images[j], recon[j], heatmap,
+                                save_name=f'test_sample_{viz_count}.png',
+                                show=False
+                            )
+                            viz_count += 1
+            
+            print(f"\nAnomaly detection completed for {category}")
+            print(f"Number of test images: {len(anomaly_scores)}")
+            if anomaly_scores:
+                print(f"Average anomaly score: {np.mean(anomaly_scores):.4f}")
+                print(f"Max anomaly score: {np.max(anomaly_scores):.4f}")
+                print(f"Min anomaly score: {np.min(anomaly_scores):.4f}")
+        else:
+            print(f"No test directory found at {test_path}")
+            print("Model training completed. Ready for inference on new images.")
 
 if __name__ == '__main__':
     main()
