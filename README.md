@@ -1,169 +1,321 @@
-# 無監督學習異常檢測研究專案
+# 無監督異常檢測系統 (Unsupervised Anomaly Detection System)
 
-本專案專注於研究無監督學習方法在異常檢測領域的應用，目標是探索和比較不同的模型架構、損失函數和訓練策略，以找出最佳的異常檢測解決方案。
+基於深度學習自編碼器的工業缺陷檢測系統，專為 MVTec 資料集設計，支援無標籤的異常檢測。
 
-## 專案目標
+## 📋 目錄
 
-- 🔍 **研究無監督學習方法**：探索各種無監督學習技術在異常檢測中的應用
-- 🏗️ **模型架構優化**：實驗不同的自編碼器架構和深度學習模型
-- 📊 **損失函數比較**：評估不同損失函數對異常檢測性能的影響
-- 🎯 **訓練策略研究**：開發和測試最佳的訓練策略和超參數配置
+- [系統概述](#系統概述)
+- [運作流程圖](#運作流程圖)
+- [主要特色](#主要特色)
+- [安裝需求](#安裝需求)
+- [快速開始](#快速開始)
+- [系統架構](#系統架構)
+- [使用方式](#使用方式)
+- [參數配置](#參數配置)
+- [輸出結果](#輸出結果)
 
-## 當前實作
+## 🔍 系統概述
 
-### 模型架構
+本系統使用自編碼器架構進行無監督異常檢測，僅需正常樣本進行訓練。透過分析重建誤差和潛在空間特徵，能夠有效檢測出異常區域。
 
-#### GrayscaleAnomalyAutoencoder
-- **架構類型**：U-Net 風格的編碼器-解碼器
-- **輸入格式**：單通道灰階影像（1008×176 解析度）
-- **特色**：
-  - 跳躍連接以保留空間資訊
-  - 批次正規化和 ReLU 激活
-  - 針對灰階影像優化的通道配置
-  - 總參數量：約 15M 參數
+## 🔄 運作流程圖
 
-### 損失函數
-
-#### EnhancedGrayscaleCombinedLoss
-- **組合損失**：結合 L2 (MSE) 和多尺度 SSIM
-- **動態權重調整**：訓練過程中自動調整損失權重
-- **多尺度 SSIM**：適用於不同尺度的結構相似性評估
-- **非對稱視窗**：針對寬高比影像優化的 SSIM 計算
-
-### 訓練策略
-
-- **學習率調度**：餘弦退火學習率調度器
-- **批次大小**：16（針對灰階影像記憶體優化）
-- **訓練輪數**：100 epochs
-- **優化器**：Adam 優化器
-- **數據增強**：標準化處理（mean=0.5, std=0.5）
-
-## 資料集
-
-使用 **MVTec 資料集**進行實驗：
-- **格式**：灰階影像
-- **類別**：目前支援 'grid' 類別（可擴展至其他類別）
-- **分割**：訓練集用於模型訓練，測試集用於異常檢測評估
-
-## 專案結構
+### 訓練階段 (Training Phase)
 
 ```
-Anomaly_Detection/
-├── README.md                           # 專案說明文件
-├── CLAUDE.md                          # Claude Code 指導文件
-└── MVTec_unsupervised/                # 無監督學習實作
-    └── AE_single_channel.py           # 單通道自編碼器實作
+┌─────────────────────────────────────────────────────────────────┐
+│                         資料準備階段                              │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│   正常圖片資料   │ ───► │    資料增強      │ ───► │  合成異常生成    │
+│  (976×176 灰階)  │      │  • 旋轉 ±5°     │      │  • 亮點/暗點     │
+└─────────────────┘      │  • 縮放 95-105%  │      │  • 10×10 像素   │
+                         └─────────────────┘      │  • 強度 0.2-0.4  │
+                                                  └─────────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                         模型訓練階段                              │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                    ┌───────────┴───────────┐
+                    ▼                       ▼
+           ┌──────────────┐        ┌──────────────┐
+           │ Baseline AE  │        │ Enhanced AE  │
+           │ (無跳躍連接) │        │ (U-Net 架構) │
+           └──────────────┘        └──────────────┘
+                    │                       │
+                    └───────────┬───────────┘
+                                ▼
+                    ┌─────────────────────┐
+                    │    編碼器 (Encoder)  │
+                    │  976×176 → 30×5     │
+                    └─────────────────────┘
+                                │
+                                ▼
+                    ┌─────────────────────┐
+                    │    瓶頸層           │
+                    │  (Bottleneck)       │
+                    └─────────────────────┘
+                                │
+                                ▼
+                    ┌─────────────────────┐
+                    │   解碼器 (Decoder)  │
+                    │   30×5 → 976×176    │
+                    └─────────────────────┘
+                                │
+                                ▼
+                    ┌─────────────────────┐
+                    │   模組化損失函數     │
+                    │  • MSE (30%)        │
+                    │  • SSIM (30%)       │
+                    │  • Focal Freq (20%)│
+                    │  • Sobel Edge (20%)│
+                    └─────────────────────┘
 ```
 
-## 使用方法
+### 推理階段 (Inference Phase)
 
-### 環境需求
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         推理階段                                  │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+                                ▼
+                    ┌─────────────────────┐
+                    │    輸入圖片         │
+                    │  (可能含異常)       │
+                    └─────────────────────┘
+                                │
+                    ┌───────────┴───────────┐
+                    ▼                       ▼
+           ┌──────────────┐        ┌──────────────┐
+           │  重建誤差     │        │ 潛在空間分析 │
+           │  計算        │        │ (L2 距離)    │
+           └──────────────┘        └──────────────┘
+                    │                       │
+                    └───────────┬───────────┘
+                                ▼
+                    ┌─────────────────────┐
+                    │    異常分數計算     │
+                    │ Score = MSE + 0.5×L2│
+                    └─────────────────────┘
+                                │
+                    ┌───────────┴───────────┐
+                    ▼                       ▼
+           ┌──────────────┐        ┌──────────────┐
+           │  異常熱力圖   │        │   視覺化輸出  │
+           │  (Heatmap)   │        │  • 原圖      │
+           └──────────────┘        │  • 重建圖    │
+                                   │  • 差異圖    │
+                                   └──────────────┘
+```
+
+## ✨ 主要特色
+
+### 1. **無需標籤訓練**
+- 僅使用正常樣本進行訓練
+- 自動學習正常模式的特徵表示
+
+### 2. **雙重網路架構**
+- **Baseline Autoencoder**: 標準架構，強制資訊壓縮
+- **Enhanced Autoencoder**: U-Net 風格，精確缺陷定位
+
+### 3. **合成異常生成**
+- 訓練時自動生成亮點/暗點缺陷
+- 提升模型對異常的敏感度
+
+### 4. **模組化損失函數**
+- MSE: 像素級重建精度
+- SSIM: 結構相似性保留
+- Focal Frequency Loss: 頻率域特徵
+- Sobel Gradient Loss: 邊緣資訊保留
+
+### 5. **智慧資源管理**
+- 自動偵測 CPU 核心數
+- 動態調整資料載入器的工作進程數
+
+## 📦 安裝需求
 
 ```bash
-pip install torch torchvision numpy pillow matplotlib scipy tqdm pathlib
+# 基本套件
+pip install torch torchvision
+pip install numpy pillow matplotlib
+pip install tqdm pathlib
+
+# 可選套件（用於合成異常生成）
+pip install opencv-python
+
+# 建議使用 CUDA 支援的 PyTorch 版本以加速訓練
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 ```
 
-### 訓練模型
+## 🚀 快速開始
 
+### 1. 準備資料
+確保您的資料結構如下：
+```
+/path/to/dataset/
+├── category_name/
+│   ├── train/
+│   │   └── good/
+│   │       ├── 000.png
+│   │       ├── 001.png
+│   │       └── ...
+│   └── test/
+│       ├── good/
+│       └── defect_type/
+```
+
+### 2. 執行訓練
 ```python
-python MVTec_unsupervised/AE_single_channel.py
+python MVTec_unsupervised/anomaly_detection_v2.py
 ```
 
-### 推理使用
+### 3. 查看結果
+訓練完成後，結果將儲存在：
+- 模型檔案：`./models/{category}_final_model.pth`
+- 視覺化結果：`./models/visualizations_{category}/`
 
-#### 檔案基礎推理
+## 🏗️ 系統架構
+
+### 網路尺寸變化
+```
+輸入: 976×176 (灰階)
+├── 編碼器路徑:
+│   ├── 976×176 → 488×88 (Conv 3×3, stride 2)
+│   ├── 488×88 → 244×44
+│   ├── 244×44 → 122×22
+│   ├── 122×22 → 61×11
+│   └── 61×11 → 30×5 (最終編碼)
+│
+└── 解碼器路徑:
+    ├── 30×5 → 61×11 (ConvTranspose)
+    ├── 61×11 → 122×22
+    ├── 122×22 → 244×44
+    ├── 244×44 → 488×88
+    └── 488×88 → 976×176 (輸出)
+```
+
+### 激活函數
+- 使用 SiLU (Swish) 取代傳統 ReLU
+- 提供更平滑的梯度流
+- 避免死神經元問題
+
+## 💻 使用方式
+
+### 基本使用
 ```python
-from MVTec_unsupervised.AE_single_channel import inference_grayscale
+from anomaly_detection_v2 import *
 
-# 對單張影像進行異常檢測
-heatmap, reconstruction = inference_grayscale(
-    model_path='grid_grayscale_autoencoder.pth',
-    image_path='test_image.png',
-    category='grid'
-)
+# 載入訓練好的模型
+model = EnhancedAutoencoder()
+model.load_state_dict(torch.load('grid_final_model.pth'))
+model.eval()
+
+# 進行推理
+transform = transforms.Compose([
+    transforms.Resize((976, 176)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.5], std=[0.5])
+])
+
+# 載入圖片
+image = Image.open('test_image.png').convert('L')
+image_tensor = transform(image).unsqueeze(0)
+
+# 生成異常熱力圖
+with torch.no_grad():
+    recon = model(image_tensor)
+    diff = torch.abs(image_tensor - recon)
+    heatmap = diff[0, 0].numpy()
 ```
 
-#### 張量基礎推理
+### 自定義訓練
 ```python
-from MVTec_unsupervised.AE_single_channel import inference_grayscale_tensor
-
-# 對張量輸入進行異常檢測
-heatmap, reconstruction = inference_grayscale_tensor(
-    model_path='grid_grayscale_autoencoder.pth',
-    image_tensor=your_tensor,
-    category='grid'
-)
+# 修改配置
+config = {
+    'batch_size': 8,           # 批次大小
+    'num_epochs': 50,          # 訓練週期
+    'lr': 5e-4,                # 學習率
+    'architecture': 'baseline', # 或 'enhanced'
+    'use_synthetic_anomalies': False,  # 關閉合成異常
+}
 ```
 
-## 核心特色
+## ⚙️ 參數配置
 
-### 1. 進階損失函數
-- **多尺度 SSIM**：評估不同尺度的結構相似性
-- **動態權重調整**：隨訓練進度自動調整 L2 和 SSIM 權重
-- **非對稱視窗**：適應寬高比影像的 SSIM 計算
+### 主要配置參數
 
-### 2. 異常檢測
-- **像素級重建誤差**：計算原始影像與重建影像的差異
-- **高斯平滑**：提升異常熱力圖的視覺化效果
-- **自動正規化**：確保異常分數在 [0,1] 範圍內
+| 參數 | 預設值 | 說明 |
+|------|--------|------|
+| `batch_size` | 16 | 訓練批次大小 |
+| `num_epochs` | 100 | 訓練週期數 |
+| `lr` | 1e-3 | 學習率 |
+| `image_size` | (976, 176) | 輸入影像尺寸 |
+| `architecture` | 'enhanced' | 網路架構選擇 |
+| `use_synthetic_anomalies` | True | 是否使用合成異常 |
 
-### 3. 視覺化功能
-- **三聯圖顯示**：原始影像、重建影像、異常熱力圖
-- **熱力圖彩色映射**：使用 'hot' 色彩映射突出異常區域
-- **自動保存結果**：生成高解析度的檢測結果圖
+### 損失函數權重
 
-## 配置參數
+| 組件 | 權重 | 功能 |
+|------|------|------|
+| MSE | 0.3 | 像素級精確度 |
+| SSIM | 0.3 | 結構相似性 |
+| Focal Frequency | 0.2 | 頻率域特徵 |
+| Sobel Gradient | 0.2 | 邊緣保留 |
 
-在 `main()` 函數中可調整的關鍵參數：
+## 📊 輸出結果
 
+### 1. 模型檔案
+- `{category}_final_model.pth`: 最終訓練模型
+- `checkpoint_epoch_{n}.pth`: 每 10 個 epoch 的檢查點
+
+### 2. 視覺化結果
+每個測試樣本包含三張圖：
+- **原始圖片**: 輸入的測試影像
+- **重建圖片**: 模型重建的結果
+- **異常熱力圖**: 顯示異常區域（紅色=高異常分數）
+
+### 3. 異常分數統計
+- 平均異常分數
+- 最大異常分數
+- 最小異常分數
+
+## 🔧 進階功能
+
+### 1. 批次推理
 ```python
-device = 'cuda'                # 計算設備
-batch_size = 16               # 批次大小
-num_epochs = 100              # 訓練輪數
-image_size = 1024             # 影像大小
-dataset_path = '/path/to/data'  # 資料集路徑
-categories = ['grid']         # 訓練類別
+# 對整個資料夾進行異常檢測
+def batch_inference(model, folder_path, transform):
+    results = []
+    for img_path in Path(folder_path).glob('*.png'):
+        # 處理每張圖片
+        score = compute_anomaly_score(model, img_path, transform)
+        results.append((img_path, score))
+    return results
 ```
 
-## 未來發展方向
+### 2. 自定義異常閾值
+```python
+# 基於訓練資料統計設定閾值
+normal_scores = compute_normal_scores(model, train_loader)
+threshold = np.mean(normal_scores) + 3 * np.std(normal_scores)
+```
 
-### 模型架構研究
-- [ ] 變分自編碼器 (VAE)
-- [ ] 生成對抗網路 (GAN)
-- [ ] Vision Transformer 架構
-- [ ] 記憶增強網路
+## 📝 注意事項
 
-### 損失函數探索
-- [ ] 感知損失 (Perceptual Loss)
-- [ ] 特徵匹配損失
-- [ ] 對抗損失
-- [ ] 自定義異常敏感損失
+1. **記憶體需求**: Enhanced 架構需要較多 GPU 記憶體
+2. **訓練時間**: 100 epochs 約需 1-2 小時（取決於 GPU）
+3. **影像格式**: 系統預期灰階 PNG 影像
+4. **正規化**: 影像使用 mean=0.5, std=0.5 正規化
 
-### 訓練策略優化
-- [ ] 課程學習
-- [ ] 自監督預訓練
-- [ ] 增量學習
-- [ ] 多任務學習
+## 🤝 貢獻指南
 
-### 評估指標
-- [ ] AUC-ROC 曲線
-- [ ] AUC-PR 曲線
-- [ ] 像素級和物體級評估
-- [ ] 速度和記憶體效率分析
+歡迎提交 Issue 或 Pull Request 來改進系統！
 
-## 貢獻
+## 📄 授權
 
-歡迎對本專案提出建議和改進：
-1. Fork 專案
-2. 建立特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交變更 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 開啟 Pull Request
-
-## 授權
-
-本專案採用 MIT 授權條款 - 詳見 LICENSE 文件
-
-## 聯絡資訊
-
-如有任何問題或建議，請隨時聯絡專案維護者。
+本專案採用 MIT 授權條款。

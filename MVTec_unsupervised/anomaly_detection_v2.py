@@ -8,7 +8,7 @@ from PIL import Image
 import os
 from pathlib import Path
 import matplotlib.pyplot as plt
-from scipy.ndimage import gaussian_filter
+# from scipy.ndimage import gaussian_filter  # Not needed anymore
 from tqdm import tqdm
 # from sklearn.metrics import roc_auc_score, average_precision_score  # Not needed without ground truth
 import random
@@ -206,13 +206,13 @@ class SyntheticAnomalyGenerator:
             # Decide if bright or dark spot
             is_bright = random.random() > 0.5
             
-            # Calculate spot intensity
+            # Calculate spot intensity (adjusted for normalized images)
             if is_bright:
                 # Bright spot: increase pixel values
-                intensity = random.uniform(0.3, 0.6)  # How much brighter
+                intensity = random.uniform(0.2, 0.4)  # Reduced intensity for normalized images
             else:
                 # Dark spot: decrease pixel values
-                intensity = random.uniform(-0.6, -0.3)  # How much darker
+                intensity = random.uniform(-0.4, -0.2)  # Reduced intensity for normalized images
             
             # Apply spot to image
             y_start = y - spot_h//2
@@ -353,6 +353,9 @@ class EnhancedAutoencoder(nn.Module):
         self.dec2 = self._conv_block(64 + 64, 32)     # Skip from enc2
         self.dec1 = self._conv_block(32 + 32, 32)     # Skip from enc1
         
+        # Precise upsampling layer for bottleneck
+        self.bottleneck_upsample = nn.ConvTranspose2d(512, 512, 3, 2, 0, output_padding=1)  # 30x5 -> 61x11
+        
         self.final = nn.Conv2d(32, 1, 1)
         self.pool = nn.MaxPool2d(2, 2)
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
@@ -382,8 +385,8 @@ class EnhancedAutoencoder(nn.Module):
         b = self.bottleneck(e_final)
         
         # Decoding with skip connections
-        # First upsample from bottleneck
-        b_up = F.interpolate(b, size=e5.shape[2:], mode='bilinear', align_corners=False)
+        # Use precise transposed convolution for upsampling
+        b_up = self.bottleneck_upsample(b)  # 30x5 -> 61x11
         d5 = self.dec5(torch.cat([b_up, e5], dim=1))
         d4 = self.dec4(torch.cat([self.upsample(d5), e4], dim=1))
         d3 = self.dec3(torch.cat([self.upsample(d4), e3], dim=1))
@@ -397,19 +400,19 @@ class EnhancedAutoencoder(nn.Module):
         features = []
         
         e1 = self.enc1(x)
-        features.append(F.adaptive_avg_pool2d(e1, 1).squeeze())
+        features.append(F.adaptive_avg_pool2d(e1, 1).squeeze(-1).squeeze(-1))  # Squeeze only spatial dims
         
         e2 = self.enc2(self.pool(e1))
-        features.append(F.adaptive_avg_pool2d(e2, 1).squeeze())
+        features.append(F.adaptive_avg_pool2d(e2, 1).squeeze(-1).squeeze(-1))
         
         e3 = self.enc3(self.pool(e2))
-        features.append(F.adaptive_avg_pool2d(e3, 1).squeeze())
+        features.append(F.adaptive_avg_pool2d(e3, 1).squeeze(-1).squeeze(-1))
         
         e4 = self.enc4(self.pool(e3))
-        features.append(F.adaptive_avg_pool2d(e4, 1).squeeze())
+        features.append(F.adaptive_avg_pool2d(e4, 1).squeeze(-1).squeeze(-1))
         
         e5 = self.enc5(self.pool(e4))
-        features.append(F.adaptive_avg_pool2d(e5, 1).squeeze())
+        features.append(F.adaptive_avg_pool2d(e5, 1).squeeze(-1).squeeze(-1))
         
         return torch.cat(features, dim=-1)
 
@@ -647,6 +650,11 @@ def train_anomaly_model(model, train_loader, config):
 
 # ==================== Main Execution ====================
 def main():
+    # Determine optimal number of workers
+    import multiprocessing
+    cpu_count = multiprocessing.cpu_count()
+    optimal_workers = min(4, cpu_count - 1)  # Leave one CPU free
+    
     # Configuration
     config = {
         'device': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
@@ -662,7 +670,8 @@ def main():
             'use_focal_freq': True, 'focal_freq_weight': 0.2,
             'use_sobel': True, 'sobel_weight': 0.2
         },
-        'save_path': './models'
+        'save_path': './models',
+        'num_workers': optimal_workers  # Dynamic worker count
     }
     
     # Create save directory
@@ -683,6 +692,7 @@ def main():
     
     print(f"Model architecture: {config['architecture']}")
     print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"Number of workers: {config['num_workers']} (detected {cpu_count} CPUs)")
     
     # Training on MVTec categories
     categories = ['grid']  # Can be extended
@@ -702,7 +712,7 @@ def main():
         
         # Create dataloader
         train_loader = DataLoader(train_dataset, batch_size=config['batch_size'], 
-                                shuffle=True, num_workers=4)
+                                shuffle=True, num_workers=config['num_workers'])
         
         # Train model (no validation set needed)
         model = train_anomaly_model(model, train_loader, config)
@@ -727,13 +737,14 @@ def main():
             )
             
             test_loader = DataLoader(test_dataset, batch_size=config['batch_size'], 
-                                   shuffle=False, num_workers=4)
+                                   shuffle=False, num_workers=config['num_workers'])
             
             # Setup visualization
             visualizer = AnomalyVisualizer(save_dir=f"{config['save_path']}/visualizations_{category}")
             latent_analyzer = LatentSpaceAnalyzer(model, config['device'])
             
             # Fit latent space on normal training data
+            # Reuse train_loader instead of creating a new one
             latent_analyzer.fit_normal_features(train_loader)
             
             # Process test images
@@ -762,10 +773,10 @@ def main():
                     # Visualize some examples
                     for j in range(images.size(0)):
                         if viz_count < num_visualizations:
-                            # Generate anomaly heatmap
+                            # Generate anomaly heatmap (raw difference)
                             diff = torch.abs(images[j] - recon[j])
                             heatmap = diff.cpu().numpy()[0]
-                            heatmap = gaussian_filter(heatmap, sigma=2)
+                            # No gaussian smoothing - show raw difference
                             
                             # Normalize heatmap
                             if heatmap.max() > heatmap.min():
