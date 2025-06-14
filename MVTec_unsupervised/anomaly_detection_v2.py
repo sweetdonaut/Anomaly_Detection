@@ -148,12 +148,12 @@ class ModularLossFunction(nn.Module):
 
 # ==================== Synthetic Anomaly Generation ====================
 class SyntheticAnomalyGenerator:
-    """Generate synthetic anomalies for training"""
+    """Generate synthetic anomalies for training - bright/dark spots only"""
     def __init__(self, anomaly_prob=0.3):
         self.anomaly_prob = anomaly_prob
     
     def generate_anomaly(self, image):
-        """Generate synthetic anomaly on normal image"""
+        """Generate synthetic bright or dark spot anomaly"""
         if random.random() > self.anomaly_prob:
             return image, torch.zeros_like(image)
         
@@ -161,103 +161,75 @@ class SyntheticAnomalyGenerator:
         anomaly_image = image.clone()
         mask = torch.zeros_like(image)
         
-        # Choose anomaly type
-        anomaly_type = random.choice(['mask', 'noise', 'blur', 'scratch'])
-        
-        if anomaly_type == 'mask':
-            anomaly_image, mask = self._random_masking(anomaly_image)
-        elif anomaly_type == 'noise':
-            anomaly_image, mask = self._controlled_noise(anomaly_image)
-        elif anomaly_type == 'blur':
-            anomaly_image, mask = self._local_blur(anomaly_image)
-        elif anomaly_type == 'scratch':
-            anomaly_image, mask = self._synthetic_scratch(anomaly_image)
+        # Generate bright or dark spot
+        anomaly_image, mask = self._generate_spot_anomaly(anomaly_image)
         
         return anomaly_image, mask
     
-    def _random_masking(self, image):
-        """Random rectangular masking"""
+    def _generate_spot_anomaly(self, image):
+        """Generate circular/elliptical bright or dark spots"""
         B, C, H, W = image.shape
         mask = torch.zeros_like(image)
         
         for b in range(B):
-            # Random mask size (10-30% of image)
-            mask_h = random.randint(int(H * 0.1), int(H * 0.3))
-            mask_w = random.randint(int(W * 0.1), int(W * 0.3))
+            # Spot size around 10x10 pixels with some variation
+            base_size = 10
+            size_variation = random.uniform(0.7, 1.3)  # 70% to 130% of base size
+            spot_h = int(base_size * size_variation * random.uniform(0.8, 1.2))  # Elliptical variation
+            spot_w = int(base_size * size_variation * random.uniform(0.8, 1.2))
             
-            # Random position
-            y = random.randint(0, H - mask_h)
-            x = random.randint(0, W - mask_w)
+            # Ensure minimum size
+            spot_h = max(6, min(spot_h, 15))
+            spot_w = max(6, min(spot_w, 15))
             
-            # Apply mask
-            image[b, :, y:y+mask_h, x:x+mask_w] = random.random()
-            mask[b, :, y:y+mask_h, x:x+mask_w] = 1
-        
-        return image, mask
-    
-    def _controlled_noise(self, image):
-        """Add controlled Gaussian noise to specific regions"""
-        B, C, H, W = image.shape
-        mask = torch.zeros_like(image)
-        
-        for b in range(B):
-            # Random region
-            region_h = random.randint(int(H * 0.1), int(H * 0.2))
-            region_w = random.randint(int(W * 0.1), int(W * 0.2))
-            y = random.randint(0, H - region_h)
-            x = random.randint(0, W - region_w)
+            # Random position (ensure spot fits within image)
+            y = random.randint(spot_h//2, H - spot_h//2 - 1)
+            x = random.randint(spot_w//2, W - spot_w//2 - 1)
             
-            # Add noise
-            noise = torch.randn(C, region_h, region_w) * 0.3
-            image[b, :, y:y+region_h, x:x+region_w] += noise.to(image.device)
-            mask[b, :, y:y+region_h, x:x+region_w] = 1
-        
-        return image, mask
-    
-    def _local_blur(self, image):
-        """Apply local blurring"""
-        B, C, H, W = image.shape
-        mask = torch.zeros_like(image)
-        
-        for b in range(B):
-            # Random region
-            blur_h = random.randint(int(H * 0.1), int(H * 0.2))
-            blur_w = random.randint(int(W * 0.1), int(W * 0.2))
-            y = random.randint(0, H - blur_h)
-            x = random.randint(0, W - blur_w)
+            # Create elliptical mask
+            y_grid, x_grid = torch.meshgrid(
+                torch.arange(spot_h, dtype=torch.float32) - spot_h/2,
+                torch.arange(spot_w, dtype=torch.float32) - spot_w/2,
+                indexing='ij'
+            )
             
-            # Apply Gaussian blur
-            region = image[b, :, y:y+blur_h, x:x+blur_w]
-            blurred = F.avg_pool2d(region.unsqueeze(0), 3, 1, 1).squeeze(0)
-            image[b, :, y:y+blur_h, x:x+blur_w] = blurred
-            mask[b, :, y:y+blur_h, x:x+blur_w] = 1
-        
-        return image, mask
-    
-    def _synthetic_scratch(self, image):
-        """Generate synthetic scratch defect"""
-        B, C, H, W = image.shape
-        mask = torch.zeros_like(image)
-        
-        for b in range(B):
-            # Random line parameters
-            start_x = random.randint(0, W-1)
-            start_y = random.randint(0, H-1)
-            end_x = random.randint(0, W-1)
-            end_y = random.randint(0, H-1)
+            # Elliptical distance
+            ellipse_mask = ((x_grid / (spot_w/2))**2 + (y_grid / (spot_h/2))**2) <= 1
+            ellipse_mask = ellipse_mask.float()
             
-            # Draw line on numpy array
-            img_np = image[b, 0].cpu().numpy()
-            mask_np = np.zeros_like(img_np)
+            # Smooth edges with Gaussian-like falloff
+            distance = torch.sqrt((x_grid / (spot_w/2))**2 + (y_grid / (spot_h/2))**2)
+            smooth_mask = torch.exp(-2 * torch.clamp(distance - 0.8, min=0))
+            smooth_mask = smooth_mask * ellipse_mask
+            smooth_mask = smooth_mask / smooth_mask.max() if smooth_mask.max() > 0 else smooth_mask
             
-            # Draw line
-            cv2.line(img_np, (start_x, start_y), (end_x, end_y), 
-                    color=random.random(), thickness=random.randint(1, 3))
-            cv2.line(mask_np, (start_x, start_y), (end_x, end_y), 
-                    color=1, thickness=random.randint(1, 3))
+            # Decide if bright or dark spot
+            is_bright = random.random() > 0.5
             
-            image[b, 0] = torch.from_numpy(img_np).to(image.device)
-            mask[b, 0] = torch.from_numpy(mask_np).to(image.device)
+            # Calculate spot intensity
+            if is_bright:
+                # Bright spot: increase pixel values
+                intensity = random.uniform(0.3, 0.6)  # How much brighter
+            else:
+                # Dark spot: decrease pixel values
+                intensity = random.uniform(-0.6, -0.3)  # How much darker
+            
+            # Apply spot to image
+            y_start = y - spot_h//2
+            x_start = x - spot_w//2
+            y_end = y_start + spot_h
+            x_end = x_start + spot_w
+            
+            # Apply smooth intensity change
+            for c in range(C):
+                region = image[b, c, y_start:y_end, x_start:x_end]
+                image[b, c, y_start:y_end, x_start:x_end] = torch.clamp(
+                    region + intensity * smooth_mask.to(image.device),
+                    -1, 1  # Assuming normalized images
+                )
+            
+            # Binary mask for evaluation
+            mask[b, :, y_start:y_end, x_start:x_end] = (ellipse_mask > 0).float()
         
         return image, mask
 
