@@ -322,7 +322,7 @@ class ModularLossManager(nn.Module):
         if self.normalize_weights:
             self._normalize_weights()
  
-# ==================== Usage Example ====================
+# ==================== Usage Examples ====================
 def create_default_loss_manager() -> ModularLossManager:
     """Create a loss manager with default configuration"""
     loss_config = {
@@ -346,7 +346,43 @@ def create_default_loss_manager() -> ModularLossManager:
         }
     }
     
-    return ModularLossManager(loss_config, normalize_weights=True)           
+    return ModularLossManager(loss_config, normalize_weights=True)
+
+def create_loss_config_from_flags(use_mse=True, mse_weight=0.3,
+                                  use_ssim=True, ssim_weight=0.3,
+                                  use_focal_freq=True, focal_freq_weight=0.2,
+                                  use_sobel=True, sobel_weight=0.2,
+                                  **kwargs):
+    """Create loss configuration from boolean flags (for backward compatibility)"""
+    loss_config = {}
+    
+    if use_mse:
+        loss_config['mse'] = {
+            'class': MSELoss,
+            'weight': mse_weight
+        }
+    
+    if use_ssim:
+        loss_config['ssim'] = {
+            'class': SSIMLoss,
+            'weight': ssim_weight,
+            'params': kwargs.get('ssim_params', {'window_size': 11})
+        }
+    
+    if use_focal_freq:
+        loss_config['focal_freq'] = {
+            'class': FocalFrequencyLoss,
+            'weight': focal_freq_weight,
+            'params': kwargs.get('focal_freq_params', {'alpha': 1.0, 'patch_factor': 1})
+        }
+    
+    if use_sobel:
+        loss_config['sobel'] = {
+            'class': SobelGradientLoss,
+            'weight': sobel_weight
+        }
+    
+    return loss_config           
             
 # ==================== Synthetic Anomaly Generation ====================
 class SyntheticAnomalyGenerator:
@@ -774,23 +810,29 @@ class AnomalyVisualizer:
 
 # ==================== Training Function ====================
 def train_anomaly_model(model, train_loader, config):
-    """Train anomaly detection model"""
+    """Train anomaly detection model with modular loss support"""
     device = config['device']
     model.to(device)
     
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lr'])
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, config['num_epochs'])
     
-    # Initialize loss function
-    criterion = ModularLossFunction(**config['loss_config'])
+    # Initialize loss function with ModularLossManager
+    criterion = ModularLossManager(config['loss_config'], normalize_weights=True)
+    criterion.to(device)
     
     # Track training history
-    train_history = []
+    train_history = {
+        'total_loss': [],
+        'component_losses': {name: [] for name in criterion.losses.keys()},
+        'weights': []
+    }
     
     for epoch in range(config['num_epochs']):
         # Training
         model.train()
-        train_losses = {'total': 0, 'mse': 0, 'ssim': 0, 'focal_freq': 0, 'sobel': 0}
+        train_losses = {key: 0 for key in criterion.losses.keys()}
+        train_losses['total'] = 0
         
         for batch in tqdm(train_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]}'):
             if config.get('use_synthetic_anomalies', False):
@@ -820,9 +862,9 @@ def train_anomaly_model(model, train_loader, config):
             optimizer.step()
             
             # Update losses
-            for key in train_losses:
-                if key in loss_dict:
-                    train_losses[key] += loss_dict[key].item()
+            for key, value in loss_dict.items():
+                if key in train_losses:
+                    train_losses[key] += value.item()
         
         # Average losses
         for key in train_losses:
@@ -832,12 +874,21 @@ def train_anomaly_model(model, train_loader, config):
         scheduler.step()
         
         # Store history
-        train_history.append(train_losses['total'])
+        train_history['total_loss'].append(train_losses['total'])
+        for name in criterion.losses.keys():
+            if name in train_losses:
+                train_history['component_losses'][name].append(train_losses[name])
+        train_history['weights'].append(criterion.get_weights())
         
         # Print progress
         print(f"Epoch {epoch+1}: Train Loss: {train_losses['total']:.4f}")
-        print(f"  Components - MSE: {train_losses['mse']:.4f}, SSIM: {train_losses['ssim']:.4f}, "
-              f"Focal: {train_losses['focal_freq']:.4f}, Sobel: {train_losses['sobel']:.4f}")
+        loss_components = [f"{name}: {train_losses.get(name, 0):.4f}" for name in criterion.losses.keys()]
+        print(f"  Components - {', '.join(loss_components)}")
+        
+        # Print current weights
+        weights = criterion.get_weights()
+        weight_str = ', '.join([f"{name}: {weight:.3f}" for name, weight in weights.items()])
+        print(f"  Weights - {weight_str}")
         
         # Save checkpoint every 10 epochs
         if (epoch + 1) % 10 == 0:
@@ -848,7 +899,7 @@ def train_anomaly_model(model, train_loader, config):
                 'loss': train_losses['total'],
             }, f"{config['save_path']}/checkpoint_epoch_{epoch+1}.pth")
     
-    return model
+    return model, train_history
 
 # ==================== Main Execution ====================
 def main():
@@ -867,10 +918,24 @@ def main():
         'architecture': 'enhanced',  # 'baseline' or 'enhanced'
         'use_synthetic_anomalies': True,
         'loss_config': {
-            'use_mse': True, 'mse_weight': 0.3,
-            'use_ssim': True, 'ssim_weight': 0.3,
-            'use_focal_freq': True, 'focal_freq_weight': 0.2,
-            'use_sobel': True, 'sobel_weight': 0.2
+            'mse': {
+                'class': MSELoss,
+                'weight': 0.3
+            },
+            'ssim': {
+                'class': SSIMLoss,
+                'weight': 0.3,
+                'params': {'window_size': 11}
+            },
+            'focal_freq': {
+                'class': FocalFrequencyLoss,
+                'weight': 0.2,
+                'params': {'alpha': 1.0, 'patch_factor': 1}
+            },
+            'sobel': {
+                'class': SobelGradientLoss,
+                'weight': 0.2
+            }
         },
         'save_path': './models',
         'num_workers': optimal_workers  # Dynamic worker count
@@ -917,7 +982,7 @@ def main():
                                 shuffle=True, num_workers=config['num_workers'])
         
         # Train model (no validation set needed)
-        model = train_anomaly_model(model, train_loader, config)
+        model, train_history = train_anomaly_model(model, train_loader, config)
         
         # Save final model
         torch.save(model.state_dict(), f"{config['save_path']}/{category}_final_model.pth")
