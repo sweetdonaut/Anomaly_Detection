@@ -44,21 +44,23 @@ class MSELoss(BaseLoss):
         return F.mse_loss(pred, target)
 
 class SSIMLoss(BaseLoss):
-    """結構相似性指標損失函數
+    """Structural Similarity Index Loss
     
-    本類別實現了 Wang et al. (2004) 提出的結構相似性指標 (SSIM) 損失函數。
-    SSIM 透過綜合評估亮度、對比度和結構三個維度的相似性來衡量圖像品質，
-    相較於傳統的均方誤差損失，SSIM 更符合人類視覺系統的感知特性。
+    This class implements the Structural Similarity Index (SSIM) loss proposed by Wang et al. (2004).
+    SSIM evaluates image quality by comprehensively assessing similarity across three dimensions:
+    luminance, contrast, and structure. Compared to traditional mean squared error loss,
+    SSIM better aligns with human visual perception characteristics.
     
-    本實現遵循模組化損失函數框架的設計規範，確保能夠與其他損失函數
-    無縫組合使用。所有批次樣本的損失值會自動聚合為單一標量值。
+    This implementation follows the modular loss function framework design specifications,
+    ensuring seamless integration with other loss functions. Loss values from all batch
+    samples are automatically aggregated into a single scalar value.
     
-    參數說明：
-        weight (float): 損失函數在總體損失中的權重係數。預設值為 1.0
-        window_size (int): 高斯窗口的大小，必須為奇數。建議使用 11 或更大的值
-                          以獲得穩定的結果。預設值為 11
-        sigma (float): 高斯核的標準差，控制窗口權重的分布。較大的值會產生
-                      更平滑的權重分布。預設值為 1.5
+    Args:
+        weight (float): Weight coefficient of this loss function in the total loss. Default: 1.0
+        window_size (int): Size of the Gaussian window, must be odd. Recommend using 11 or larger
+                          for stable results. Default: 11
+        sigma (float): Standard deviation of the Gaussian kernel, controls the distribution of
+                      window weights. Larger values produce smoother weight distributions. Default: 1.5
     """
     
     def __init__(self, 
@@ -67,7 +69,7 @@ class SSIMLoss(BaseLoss):
                  sigma: float = 1.5):
         super().__init__(weight)
         
-        # 參數驗證確保輸入值的合理性
+        # Parameter validation to ensure reasonable input values
         if window_size % 2 == 0:
             raise ValueError(f"Window size must be odd, got {window_size}")
         if window_size < 3:
@@ -77,26 +79,27 @@ class SSIMLoss(BaseLoss):
         
         self.window_size = window_size
         self.sigma = sigma
-        self.channel = None  # 將根據輸入動態設定
+        self.channel = None  # Will be dynamically set based on input
         
-        # 預先創建單通道高斯窗口並註冊為緩衝區
-        # register_buffer 的使用確保了窗口在模型保存、載入和設備轉移時
-        # 能夠得到正確的處理，避免手動管理這些操作
+        # Pre-create single-channel Gaussian window and register as buffer
+        # Using register_buffer ensures the window is properly handled during
+        # model saving, loading, and device transfers, avoiding manual management
         initial_window = self._create_window(window_size, 1)
         self.register_buffer('window', initial_window, persistent=False)
         
     def _gaussian_1d(self, window_size: int, sigma: float) -> torch.Tensor:
-        """生成一維高斯核
+        """Generate 1D Gaussian kernel
         
-        根據高斯分布公式創建歸一化的一維核心，該核心將用於
-        構建二維高斯窗口。歸一化確保權重總和為 1。
+        Creates a normalized 1D kernel based on the Gaussian distribution formula.
+        This kernel will be used to construct the 2D Gaussian window.
+        Normalization ensures the weights sum to 1.
         
-        參數：
-            window_size: 核心的大小
-            sigma: 高斯分布的標準差
+        Args:
+            window_size: Size of the kernel
+            sigma: Standard deviation of the Gaussian distribution
             
-        返回：
-            torch.Tensor: 歸一化的一維高斯核
+        Returns:
+            torch.Tensor: Normalized 1D Gaussian kernel
         """
         coords = torch.arange(window_size, dtype=torch.float32)
         coords -= window_size // 2
@@ -105,141 +108,147 @@ class SSIMLoss(BaseLoss):
         return gaussian / gaussian.sum()
     
     def _create_window(self, window_size: int, channel: int) -> torch.Tensor:
-        """創建二維高斯窗口
+        """Create 2D Gaussian window
         
-        透過一維高斯核的外積生成二維高斯窗口。這種方法利用了
-        高斯函數的可分離性，提高了計算效率。生成的窗口會根據
-        需要擴展到指定的通道數。
+        Generates a 2D Gaussian window through outer product of 1D Gaussian kernels.
+        This method leverages the separability of Gaussian functions to improve
+        computational efficiency. The generated window is expanded to the specified
+        number of channels as needed.
         
-        參數：
-            window_size: 窗口的大小（高度和寬度相同）
-            channel: 需要的通道數
+        Args:
+            window_size: Size of the window (same for height and width)
+            channel: Number of channels needed
             
-        返回：
-            torch.Tensor: 形狀為 (channel, 1, window_size, window_size) 的高斯窗口
+        Returns:
+            torch.Tensor: Gaussian window with shape (channel, 1, window_size, window_size)
         """
         gaussian_1d = self._gaussian_1d(window_size, self.sigma)
         gaussian_2d = gaussian_1d.unsqueeze(1) @ gaussian_1d.unsqueeze(0)
         gaussian_2d = gaussian_2d.unsqueeze(0).unsqueeze(0)
         
-        # 擴展到指定通道數，每個通道使用相同的權重
+        # Expand to specified number of channels, using same weights for each channel
         window = gaussian_2d.expand(channel, 1, window_size, window_size)
         return window.contiguous()
     
     def _ssim(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """計算結構相似性指標
+        """Calculate structural similarity index
         
-        實現 SSIM 的核心計算邏輯。該方法計算輸入圖像對的局部統計量，
-        並應用 SSIM 公式來評估相似性。計算過程包括局部均值、方差和
-        協方差的估計，這些統計量分別對應於亮度、對比度和結構的相似性。
+        Implements the core computation logic of SSIM. This method calculates local
+        statistics of the input image pairs and applies the SSIM formula to evaluate
+        similarity. The computation includes estimation of local means, variances,
+        and covariances, which correspond to similarities in luminance, contrast,
+        and structure respectively.
         
-        參數：
-            x: 第一張圖像張量，形狀為 [N, C, H, W]
-            y: 第二張圖像張量，形狀為 [N, C, H, W]
+        Args:
+            x: First image tensor with shape [N, C, H, W]
+            y: Second image tensor with shape [N, C, H, W]
             
-        返回：
-            torch.Tensor: 每個批次樣本的 SSIM 值，形狀為 [N]，值域為 [0, 1]
+        Returns:
+            torch.Tensor: SSIM values for each batch sample, shape [N], range [0, 1]
         """
-        # SSIM 穩定性常數，基於原始論文的建議值
-        # 這些常數防止分母為零，並控制各成分的相對重要性
+        # SSIM stability constants based on recommendations from the original paper
+        # These constants prevent division by zero and control relative importance of components
         C1 = (0.01 ** 2)
         C2 = (0.03 ** 2)
         
-        # 使用高斯加權計算局部均值
-        # groups 參數確保每個通道獨立進行卷積運算
+        # Calculate local means using Gaussian weighting
+        # groups parameter ensures each channel is convolved independently
         mu_x = F.conv2d(x, self.window, padding=self.window_size//2, groups=self.channel)
         mu_y = F.conv2d(y, self.window, padding=self.window_size//2, groups=self.channel)
         
-        # 計算均值的平方和乘積，用於後續計算
+        # Calculate squares and products of means for subsequent calculations
         mu_x_sq = mu_x ** 2
         mu_y_sq = mu_y ** 2
         mu_xy = mu_x * mu_y
         
-        # 計算局部方差和協方差
-        # 使用公式：Var(X) = E[X²] - E[X]²
+        # Calculate local variances and covariance
+        # Using formula: Var(X) = E[X²] - E[X]²
         sigma_x_sq = F.conv2d(x ** 2, self.window, padding=self.window_size//2, groups=self.channel) - mu_x_sq
         sigma_y_sq = F.conv2d(y ** 2, self.window, padding=self.window_size//2, groups=self.channel) - mu_y_sq
         sigma_xy = F.conv2d(x * y, self.window, padding=self.window_size//2, groups=self.channel) - mu_xy
         
-        # 應用 SSIM 公式
+        # Apply SSIM formula
         # SSIM = (2μxμy + C1)(2σxy + C2) / (μx² + μy² + C1)(σx² + σy² + C2)
         luminance_contrast = (2 * mu_xy + C1) * (2 * sigma_xy + C2)
         denominator = (mu_x_sq + mu_y_sq + C1) * (sigma_x_sq + sigma_y_sq + C2)
         
         ssim_map = luminance_contrast / denominator
         
-        # 對每個樣本的空間和通道維度取平均，保持批次維度
-        # 這確保了批次中每個樣本都能獲得獨立的梯度信號
+        # Average over spatial and channel dimensions for each sample, keeping batch dimension
+        # This ensures each sample in the batch gets independent gradient signals
         return ssim_map.mean(dim=[1, 2, 3])
     
     def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """計算 SSIM 損失
+        """Calculate SSIM loss
         
-        本方法是損失函數的主要介面，負責計算預測圖像與目標圖像之間的
-        SSIM 損失。損失值定義為 1 - SSIM，確保完美匹配時損失為 0，
-        完全不匹配時損失接近 1。
+        This method is the main interface of the loss function, responsible for
+        calculating SSIM loss between predicted and target images. Loss is defined
+        as 1 - SSIM, ensuring loss is 0 for perfect match and approaches 1 for
+        complete mismatch.
         
-        參數：
-            pred: 預測圖像張量，形狀必須為 [N, C, H, W]
-            target: 目標圖像張量，形狀必須為 [N, C, H, W]
+        Args:
+            pred: Predicted image tensor, shape must be [N, C, H, W]
+            target: Target image tensor, shape must be [N, C, H, W]
             
-        返回：
-            torch.Tensor: 標量損失值，代表整個批次的平均損失
+        Returns:
+            torch.Tensor: Scalar loss value representing average loss for the batch
             
-        異常：
-            ValueError: 當輸入張量的維度不是 4 或形狀不匹配時
+        Raises:
+            ValueError: When input tensors are not 4D or shapes don't match
         """
-        # 輸入驗證確保張量格式正確
+        # Input validation to ensure tensor format is correct
         if pred.dim() != 4 or target.dim() != 4:
             raise ValueError(f"Expected 4D tensors, got {pred.dim()}D and {target.dim()}D")
         
         if pred.shape != target.shape:
             raise ValueError(f"Input shapes must match, got {pred.shape} and {target.shape}")
         
-        # 動態更新高斯窗口以匹配輸入的通道數
+        # Dynamically update Gaussian window to match input channel count
         channel = pred.size(1)
         if self.channel != channel:
             self.channel = channel
             new_window = self._create_window(self.window_size, channel)
             self.window = new_window.to(device=pred.device, dtype=pred.dtype)
         
-        # 確保窗口與輸入張量在相同的設備和資料類型
+        # Ensure window is on same device and data type as input tensors
         if self.window.device != pred.device or self.window.dtype != pred.dtype:
             self.window = self.window.to(device=pred.device, dtype=pred.dtype)
         
-        # 計算 SSIM 值並轉換為損失
+        # Calculate SSIM values and convert to loss
         ssim_values = self._ssim(pred, target)
         loss = 1.0 - ssim_values
         
-        # 返回批次平均損失（標量），確保與其他損失函數的介面一致
+        # Return batch average loss (scalar), ensuring interface consistency with other loss functions
         return loss.mean()
     
     def compute_per_sample_loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-        """計算每個樣本的個別損失值
+        """Calculate individual loss values for each sample
         
-        此輔助方法提供了獲取批次中每個樣本詳細損失資訊的途徑，
-        適用於分析、調試或需要樣本級別損失資訊的場景。該方法
-        不會影響主要的訓練流程。
+        This helper method provides a way to obtain detailed loss information for
+        each sample in the batch, suitable for analysis, debugging, or scenarios
+        requiring sample-level loss information. This method does not affect the
+        main training process.
         
-        參數：
-            pred: 預測圖像張量，形狀為 [N, C, H, W]
-            target: 目標圖像張量，形狀為 [N, C, H, W]
+        Args:
+            pred: Predicted image tensor with shape [N, C, H, W]
+            target: Target image tensor with shape [N, C, H, W]
             
-        返回：
-            torch.Tensor: 每個樣本的損失值，形狀為 [N]
+        Returns:
+            torch.Tensor: Loss values for each sample, shape [N]
         """
         with torch.no_grad():
-            # 確保設備和窗口設定正確
+            # Ensure device and window settings are correct
             if pred.size(1) != self.channel:
-                self.forward(pred, target)  # 觸發窗口更新
+                self.forward(pred, target)  # Trigger window update
             
             ssim_values = self._ssim(pred, target)
             return 1.0 - ssim_values
     
     def __repr__(self) -> str:
-        """提供類別的字串表示
+        """Provide string representation of the class
         
-        返回包含所有關鍵參數的描述性字串，便於調試和日誌記錄。
+        Returns a descriptive string containing all key parameters,
+        useful for debugging and logging.
         """
         return (f"{self.__class__.__name__}("
                 f"weight={self.weight}, "
@@ -536,7 +545,7 @@ IS_HIGH_VERSION = tuple(map(int, torch.__version__.split('+')[0].split('.'))) > 
 if IS_HIGH_VERSION:
     import torch.fft
 
-class FocalFrequencyLoss(nn.Module):
+class FocalFrequencyLoss(BaseLoss):
     """The torch.nn.Module class that implements focal frequency loss - a
     frequency domain loss function for optimizing generative models.
 
@@ -545,7 +554,7 @@ class FocalFrequencyLoss(nn.Module):
     <https://arxiv.org/pdf/2012.12821.pdf>
 
     Args:
-        loss_weight (float): weight for focal frequency loss. Default: 1.0
+        weight (float): weight for focal frequency loss. Default: 1.0
         alpha (float): the scaling factor alpha of the spectrum weight matrix for flexibility. Default: 1.0
         patch_factor (int): the factor to crop image patches for patch-based focal frequency loss. Default: 1
         ave_spectrum (bool): whether to use minibatch average spectrum. Default: False
@@ -553,9 +562,9 @@ class FocalFrequencyLoss(nn.Module):
         batch_matrix (bool): whether to calculate the spectrum weight matrix using batch-based statistics. Default: False
     """
 
-    def __init__(self, loss_weight=1.0, alpha=1.0, patch_factor=1, ave_spectrum=False, log_matrix=False, batch_matrix=False):
-        super(FocalFrequencyLoss, self).__init__()
-        self.loss_weight = loss_weight
+    def __init__(self, weight=1.0, alpha=1.0, patch_factor=1, ave_spectrum=False, log_matrix=False, batch_matrix=False):
+        super().__init__(weight)
+        # Note: self.weight is inherited from BaseLoss
         self.alpha = alpha
         self.patch_factor = patch_factor
         self.ave_spectrum = ave_spectrum
@@ -640,7 +649,8 @@ class FocalFrequencyLoss(nn.Module):
             target_freq = torch.mean(target_freq, 0, keepdim=True)
 
         # calculate focal frequency loss
-        return self.loss_formulation(pred_freq, target_freq, matrix) * self.loss_weight
+        # Note: weight multiplication is handled by BaseLoss.__call__
+        return self.loss_formulation(pred_freq, target_freq, matrix)
 
 # ==================== Modular Loss Manager ====================
 class ModularLossManager(nn.Module):
