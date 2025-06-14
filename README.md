@@ -1,6 +1,6 @@
 # 無監督異常檢測系統 (Unsupervised Anomaly Detection System)
 
-基於深度學習自編碼器的工業缺陷檢測系統，專為 MVTec 資料集設計，支援無標籤的異常檢測。
+基於深度學習自編碼器的工業缺陷檢測系統，專為單通道影像設計，支援無標籤的異常檢測。本系統採用模組化架構，支援多種損失函數組合，並提供完整的視覺化分析工具。
 
 ## 📋 目錄
 
@@ -17,6 +17,13 @@
 ## 🔍 系統概述
 
 本系統使用自編碼器架構進行無監督異常檢測，僅需正常樣本進行訓練。透過分析重建誤差和潛在空間特徵，能夠有效檢測出異常區域。
+
+### 🆕 最新版本 (v3) 特色
+- **增強的 SSIM Loss**：完整實作與詳細文檔
+- **Multi-Scale SSIM Loss**：多尺度結構相似性分析
+- **統一損失函數架構**：所有損失函數繼承自 `BaseLoss`
+- **全英文程式碼**：適合生產環境部署
+- **單通道優化**：專為灰階影像設計
 
 ## 🔄 運作流程圖
 
@@ -71,6 +78,7 @@
                     │   模組化損失函數     │
                     │  • MSE (30%)        │
                     │  • SSIM (30%)       │
+                    │  • MS-SSIM (可選)   │
                     │  • Focal Freq (20%)│
                     │  • Sobel Edge (20%)│
                     └─────────────────────┘
@@ -127,11 +135,13 @@
 - 訓練時自動生成亮點/暗點缺陷
 - 提升模型對異常的敏感度
 
-### 4. **模組化損失函數**
-- MSE: 像素級重建精度
-- SSIM: 結構相似性保留
-- Focal Frequency Loss: 頻率域特徵
-- Sobel Gradient Loss: 邊緣資訊保留
+### 4. **模組化損失函數 (v3 增強)**
+- **MSE**: 像素級重建精度
+- **SSIM**: 結構相似性保留（含詳細參數控制）
+- **Multi-Scale SSIM**: 多尺度結構分析
+- **Focal Frequency Loss**: 頻率域特徵
+- **Sobel Gradient Loss**: 邊緣資訊保留
+- **統一管理**: 透過 `ModularLossManager` 自動權重正規化
 
 ### 5. **智慧資源管理**
 - 自動偵測 CPU 核心數
@@ -143,13 +153,15 @@
 # 基本套件
 pip install torch torchvision
 pip install numpy pillow matplotlib
-pip install tqdm pathlib
-
-# 可選套件（用於合成異常生成）
-pip install opencv-python
+pip install tqdm scipy
+pip install opencv-python  # 用於合成異常生成
+pip install scikit-learn   # 用於評估指標
 
 # 建議使用 CUDA 支援的 PyTorch 版本以加速訓練
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# Python 版本要求
+# Python >= 3.8 (需要 typing 模組支援)
 ```
 
 ## 🚀 快速開始
@@ -170,14 +182,20 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
 ```
 
 ### 2. 執行訓練
-```python
+```bash
+# 使用最新版本 (v3)
+python MVTec_unsupervised/anomaly_detection_v3.py
+
+# 使用前一版本 (v2)
 python MVTec_unsupervised/anomaly_detection_v2.py
 ```
 
 ### 3. 查看結果
 訓練完成後，結果將儲存在：
 - 模型檔案：`./models/{category}_final_model.pth`
+- 訓練歷史：`./models/{category}_training_history.json`
 - 視覺化結果：`./models/visualizations_{category}/`
+- 異常分數：`./models/visualizations_{category}/anomaly_scores.txt`
 
 ## 🏗️ 系統架構
 
@@ -208,11 +226,11 @@ python MVTec_unsupervised/anomaly_detection_v2.py
 
 ### 基本使用
 ```python
-from anomaly_detection_v2 import *
+from anomaly_detection_v3 import *
 
 # 載入訓練好的模型
-model = EnhancedAutoencoder()
-model.load_state_dict(torch.load('grid_final_model.pth'))
+model = EnhancedAutoencoder()  # 或 BaselineAutoencoder()
+model.load_state_dict(torch.load('models/grid_final_model.pth'))
 model.eval()
 
 # 進行推理
@@ -230,18 +248,39 @@ image_tensor = transform(image).unsqueeze(0)
 with torch.no_grad():
     recon = model(image_tensor)
     diff = torch.abs(image_tensor - recon)
-    heatmap = diff[0, 0].numpy()
+    heatmap = diff[0, 0].cpu().numpy()
+    
+# 使用潛在空間分析（可選）
+latent_analyzer = LatentSpaceAnalyzer(model, device='cuda')
+anomaly_score = latent_analyzer.compute_anomaly_score(image_tensor)
 ```
 
-### 自定義訓練
+### 自定義訓練配置
 ```python
-# 修改配置
+# 修改配置 (v3)
 config = {
     'batch_size': 8,           # 批次大小
     'num_epochs': 50,          # 訓練週期
     'lr': 5e-4,                # 學習率
     'architecture': 'baseline', # 或 'enhanced'
     'use_synthetic_anomalies': False,  # 關閉合成異常
+    'loss_config': {
+        # 自定義損失函數組合
+        'mse': {'class': MSELoss, 'weight': 0.4},
+        'ssim': {'class': SSIMLoss, 'weight': 0.4, 'params': {'window_size': 11}},
+        'sobel': {'class': SobelGradientLoss, 'weight': 0.2}
+    }
+}
+
+# 使用 Multi-Scale SSIM
+config['loss_config'] = {
+    'mse': {'class': MSELoss, 'weight': 0.3},
+    'ms_ssim': {
+        'class': MultiScaleSSIMLoss, 
+        'weight': 0.5,
+        'params': {'scales': 3, 'sigma': 1.5}
+    },
+    'focal_freq': {'class': FocalFrequencyLoss, 'weight': 0.2}
 }
 ```
 
@@ -258,20 +297,24 @@ config = {
 | `architecture` | 'enhanced' | 網路架構選擇 |
 | `use_synthetic_anomalies` | True | 是否使用合成異常 |
 
-### 損失函數權重
+### 損失函數權重 (v3 模組化設計)
 
-| 組件 | 權重 | 功能 |
-|------|------|------|
-| MSE | 0.3 | 像素級精確度 |
-| SSIM | 0.3 | 結構相似性 |
-| Focal Frequency | 0.2 | 頻率域特徵 |
-| Sobel Gradient | 0.2 | 邊緣保留 |
+| 組件 | 預設權重 | 功能 | 參數 |
+|------|----------|------|------|
+| MSE | 0.3 | 像素級精確度 | - |
+| SSIM | 0.3 | 結構相似性 | window_size, sigma |
+| Multi-Scale SSIM | - | 多尺度結構 | scales, scale_weights |
+| Focal Frequency | 0.2 | 頻率域特徵 | alpha, patch_factor |
+| Sobel Gradient | 0.2 | 邊緣保留 | - |
+
+**注意**: 權重會自動正規化至總和為 1.0
 
 ## 📊 輸出結果
 
 ### 1. 模型檔案
 - `{category}_final_model.pth`: 最終訓練模型
 - `checkpoint_epoch_{n}.pth`: 每 10 個 epoch 的檢查點
+- `{category}_training_history.json`: 訓練歷史記錄（v3 新增）
 
 ### 2. 視覺化結果
 每個測試樣本包含三張圖：
@@ -283,6 +326,21 @@ config = {
 - 平均異常分數
 - 最大異常分數
 - 最小異常分數
+- 個別影像分數記錄（儲存至文字檔）
+
+### 4. 訓練歷史 (v3 新增)
+```json
+{
+  "total_loss": [...],
+  "component_losses": {
+    "mse": [...],
+    "ssim": [...],
+    "focal_freq": [...],
+    "sobel": [...]
+  },
+  "weights": [...]
+}
+```
 
 ## 🔧 進階功能
 
@@ -309,12 +367,40 @@ threshold = np.mean(normal_scores) + 3 * np.std(normal_scores)
 
 1. **記憶體需求**: Enhanced 架構需要較多 GPU 記憶體
 2. **訓練時間**: 100 epochs 約需 1-2 小時（取決於 GPU）
-3. **影像格式**: 系統預期灰階 PNG 影像
+3. **影像格式**: 系統預期單通道灰階 PNG 影像
 4. **正規化**: 影像使用 mean=0.5, std=0.5 正規化
+5. **程式碼語言**: v3 版本所有程式碼註解使用英文
+6. **損失函數**: 所有損失函數必須繼承自 `BaseLoss`
+
+## 🚀 版本歷史
+
+### v3.0 (最新版本)
+- ✨ 增強 SSIM Loss 實作與文檔
+- ✨ 新增 Multi-Scale SSIM Loss
+- ✨ 統一損失函數架構（BaseLoss）
+- ✨ 全英文程式碼介面
+- ✨ 訓練歷史記錄功能
+- 🔧 修正 FocalFrequencyLoss 相容性
+
+### v2.0
+- ✨ 模組化損失函數框架
+- ✨ 雙重網路架構支援
+- ✨ 合成異常生成功能
+- ✨ 潛在空間分析
+
+### v1.0
+- 🎉 初始版本發布
+- 🎯 基本自編碼器實作
 
 ## 🤝 貢獻指南
 
 歡迎提交 Issue 或 Pull Request 來改進系統！
+
+建議改進方向：
+- 新增更多損失函數選項
+- 支援更多資料格式
+- 增加即時推理介面
+- 改進視覺化功能
 
 ## 📄 授權
 
