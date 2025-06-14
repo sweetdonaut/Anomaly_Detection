@@ -20,11 +20,6 @@ build/
 *.swp
 *.swo
 
-# Models
-models/
-*.pth
-*.pt
-*.pkl
 
 # Logs
 logs/
