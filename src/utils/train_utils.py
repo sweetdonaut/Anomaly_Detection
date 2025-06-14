@@ -1,8 +1,8 @@
 """
-Training Functions
+Training Utilities
 ==================
 
-Training and evaluation utilities.
+Functions for model training and evaluation.
 """
 
 import torch
@@ -100,26 +100,41 @@ def train_model(model, train_loader, config):
         weight_str = ', '.join([f"{name}: {weight:.3f}" for name, weight in weights.items()])
         print(f"  Weights - {weight_str}")
         
-        # Save checkpoint every 10 epochs
-        if (epoch + 1) % 10 == 0:
-            os.makedirs(config['save_path'], exist_ok=True)
+        # Save checkpoint every 10 epochs (if checkpoint_dir is provided)
+        if (epoch + 1) % 10 == 0 and 'checkpoint_dir' in config:
+            checkpoint_dir = config['checkpoint_dir']
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint_path = os.path.join(checkpoint_dir, f'checkpoint_epoch_{epoch+1}.pth')
             torch.save({
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'loss': train_losses['total'],
-            }, f"{config['save_path']}/checkpoint_epoch_{epoch+1}.pth")
+                'component_losses': train_losses,
+                'weights': criterion.get_weights()
+            }, checkpoint_path)
+            print(f"  Checkpoint saved to {checkpoint_path}")
     
     return model, train_history
 
 
-def evaluate_model(model, test_loader, device='cuda'):
-    """Evaluate model on test data"""
+def evaluate_model(model, test_loader, loss_manager=None, device='cuda'):
+    """Evaluate model on test data
+    
+    Args:
+        model: The model to evaluate
+        test_loader: DataLoader for test data
+        loss_manager: Optional loss manager for custom loss calculation
+        device: Device to run evaluation on
+    
+    Returns:
+        tuple: (scores, labels) where scores are anomaly scores and labels are ground truth
+    """
     model.to(device)
     model.eval()
     
-    total_loss = 0
-    reconstruction_errors = []
+    all_scores = []
+    all_labels = []
     
     with torch.no_grad():
         for batch in tqdm(test_loader, desc='Evaluating'):
@@ -129,14 +144,18 @@ def evaluate_model(model, test_loader, device='cuda'):
             # Forward pass
             recon = model(images)
             
-            # Calculate reconstruction error
-            mse = torch.mean((recon - images) ** 2, dim=[1, 2, 3])
-            reconstruction_errors.extend(mse.cpu().numpy())
-            total_loss += mse.mean().item()
+            # Calculate reconstruction error as anomaly score
+            if loss_manager is not None:
+                # For evaluation, we just use MSE as anomaly score
+                # since loss_manager returns aggregated loss
+                mse = torch.mean((recon - images) ** 2, dim=[1, 2, 3])
+                batch_scores = mse.cpu().numpy()
+            else:
+                # Default to MSE
+                mse = torch.mean((recon - images) ** 2, dim=[1, 2, 3])
+                batch_scores = mse.cpu().numpy()
+            
+            all_scores.extend(batch_scores)
+            all_labels.extend(labels.numpy())
     
-    avg_loss = total_loss / len(test_loader)
-    
-    return {
-        'avg_loss': avg_loss,
-        'reconstruction_errors': reconstruction_errors
-    }
+    return all_scores, all_labels

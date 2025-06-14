@@ -47,15 +47,15 @@ class MVTecDataset(Dataset):
         
         # Load as grayscale
         image = Image.open(img_path).convert('L')
-        
+
         # Apply augmentation if enabled
         if self.augmentation:
             image = self.augmentation(image)
-        
+            
         # Convert to tensor
         if self.transform:
             image = self.transform(image)
-        
+
         # For training with synthetic anomalies
         if self.synthetic_anomaly_generator and self.split == 'train':
             # Store clean image
