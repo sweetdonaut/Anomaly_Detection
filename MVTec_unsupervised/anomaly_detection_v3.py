@@ -322,68 +322,6 @@ class ModularLossManager(nn.Module):
         if self.normalize_weights:
             self._normalize_weights()
  
-# ==================== Usage Examples ====================
-def create_default_loss_manager() -> ModularLossManager:
-    """Create a loss manager with default configuration"""
-    loss_config = {
-        'mse': {
-            'class': MSELoss,
-            'weight': 0.3
-        },
-        'ssim': {
-            'class': SSIMLoss,
-            'weight': 0.3,
-            'params': {'window_size': 11}
-        },
-        'focal_freq': {
-            'class': FocalFrequencyLoss,
-            'weight': 0.2,
-            'params': {'alpha': 1.0, 'patch_factor': 1}
-        },
-        'sobel': {
-            'class': SobelGradientLoss,
-            'weight': 0.2
-        }
-    }
-    
-    return ModularLossManager(loss_config, normalize_weights=True)
-
-def create_loss_config_from_flags(use_mse=True, mse_weight=0.3,
-                                  use_ssim=True, ssim_weight=0.3,
-                                  use_focal_freq=True, focal_freq_weight=0.2,
-                                  use_sobel=True, sobel_weight=0.2,
-                                  **kwargs):
-    """Create loss configuration from boolean flags (for backward compatibility)"""
-    loss_config = {}
-    
-    if use_mse:
-        loss_config['mse'] = {
-            'class': MSELoss,
-            'weight': mse_weight
-        }
-    
-    if use_ssim:
-        loss_config['ssim'] = {
-            'class': SSIMLoss,
-            'weight': ssim_weight,
-            'params': kwargs.get('ssim_params', {'window_size': 11})
-        }
-    
-    if use_focal_freq:
-        loss_config['focal_freq'] = {
-            'class': FocalFrequencyLoss,
-            'weight': focal_freq_weight,
-            'params': kwargs.get('focal_freq_params', {'alpha': 1.0, 'patch_factor': 1})
-        }
-    
-    if use_sobel:
-        loss_config['sobel'] = {
-            'class': SobelGradientLoss,
-            'weight': sobel_weight
-        }
-    
-    return loss_config           
-            
 # ==================== Synthetic Anomaly Generation ====================
 class SyntheticAnomalyGenerator:
     """Generate synthetic anomalies for training - bright/dark spots only"""
@@ -917,26 +855,64 @@ def main():
         'image_size': (976, 176),  # Updated size
         'architecture': 'enhanced',  # 'baseline' or 'enhanced'
         'use_synthetic_anomalies': True,
+        # Loss function configuration - adjust weights and parameters freely
         'loss_config': {
+            # MSE Loss: Basic pixel-level reconstruction
             'mse': {
                 'class': MSELoss,
-                'weight': 0.3
+                'weight': 0.3  # Weight: 0-1, all weights will be auto-normalized
             },
+            
+            # SSIM Loss: Structural similarity preservation
             'ssim': {
                 'class': SSIMLoss,
                 'weight': 0.3,
-                'params': {'window_size': 11}
+                'params': {
+                    'window_size': 11,  # Gaussian window size, must be odd
+                    'size_average': True  # Whether to average
+                }
             },
+            
+            # Focal Frequency Loss: Dynamic focus on hard-to-reconstruct regions
             'focal_freq': {
                 'class': FocalFrequencyLoss,
                 'weight': 0.2,
-                'params': {'alpha': 1.0, 'patch_factor': 1}
+                'params': {
+                    'alpha': 1.0,  # Spectrum weight scaling factor
+                    'patch_factor': 1,  # Image patch factor
+                    'ave_spectrum': False,  # Use batch average spectrum
+                    'log_matrix': False,  # Apply log to spectrum weights
+                    'batch_matrix': False  # Use batch statistics
+                }
             },
+            
+            # Sobel Gradient Loss: Edge information preservation
             'sobel': {
                 'class': SobelGradientLoss,
                 'weight': 0.2
             }
+            
+            # Easy to add/remove loss functions, e.g.:
+            # 'perceptual': {
+            #     'class': PerceptualLoss,  # Need to define this class first
+            #     'weight': 0.1,
+            #     'params': {'feature_layers': ['relu1_2', 'relu2_2']}
+            # }
         },
+        
+        # Example configurations for experiments:
+        # 1. MSE + SSIM only (fast training)
+        # 'loss_config': {
+        #     'mse': {'class': MSELoss, 'weight': 0.5},
+        #     'ssim': {'class': SSIMLoss, 'weight': 0.5, 'params': {'window_size': 11}}
+        # },
+        
+        # 2. Emphasize frequency domain (good for textured images)
+        # 'loss_config': {
+        #     'mse': {'class': MSELoss, 'weight': 0.2},
+        #     'focal_freq': {'class': FocalFrequencyLoss, 'weight': 0.5, 'params': {'alpha': 2.0}},
+        #     'sobel': {'class': SobelGradientLoss, 'weight': 0.3}
+        # },
         'save_path': './models',
         'num_workers': optimal_workers  # Dynamic worker count
     }
@@ -986,6 +962,19 @@ def main():
         
         # Save final model
         torch.save(model.state_dict(), f"{config['save_path']}/{category}_final_model.pth")
+        
+        # Save training history for analysis
+        import json
+        history_path = f"{config['save_path']}/{category}_training_history.json"
+        with open(history_path, 'w') as f:
+            # Convert history to serializable format
+            serializable_history = {
+                'total_loss': train_history['total_loss'],
+                'component_losses': train_history['component_losses'],
+                'weights': [{k: float(v) for k, v in w.items()} for w in train_history['weights']]
+            }
+            json.dump(serializable_history, f, indent=2)
+        print(f"Training history saved to {history_path}")
         
         # Test on any available test images (optional)
         print("\nTesting on available images...")
