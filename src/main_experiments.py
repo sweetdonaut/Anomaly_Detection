@@ -122,7 +122,7 @@ def train_experiment(config, experiment_name, base_output_dir):
     
     # Create training dataset
     train_dataset = MVTecDataset(
-        '/Users/laiyongcheng/VScode/Anomaly_Detection/MVTec_AD_dataset',
+        '/home/yclai/vscode_project/Anomaly_Detection/MVTec_AD_dataset',
         category,
         'train',
         transform,
@@ -162,11 +162,11 @@ def train_experiment(config, experiment_name, base_output_dir):
     print("\nEvaluating on test set...")
     
     # Check if test directory exists
-    test_path = Path('/Users/laiyongcheng/VScode/Anomaly_Detection/MVTec_AD_dataset') / category / 'test'
+    test_path = Path('/home/yclai/vscode_project/Anomaly_Detection/MVTec_AD_dataset') / category / 'test'
     if test_path.exists():
         # Create test dataset
         test_dataset = MVTecDataset(
-            '/Users/laiyongcheng/VScode/Anomaly_Detection/MVTec_AD_dataset',
+            '/home/yclai/vscode_project/Anomaly_Detection/MVTec_AD_dataset',
             category,
             'test',
             transform
@@ -243,10 +243,10 @@ def main():
     # Base configuration
     base_config = {
         'device': device,
-        'batch_size': 64,  # Increased for faster training
+        'batch_size': 16,  # Increased for faster training
         'num_epochs': 50,  # Reduced for quick testing
         'lr': 1e-3,
-        'image_size': (1024, 1024),
+        'image_size': (256, 256),
         'use_synthetic_anomalies': True,
         'num_workers': optimal_workers
     }
