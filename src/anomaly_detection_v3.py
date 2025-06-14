@@ -256,7 +256,7 @@ class SSIMLoss(BaseLoss):
                 f"sigma={self.sigma})")
 
 
-class MultiScaleSSIMLoss(BaseLoss):
+class SimpleMultiScaleSSIMLoss(BaseLoss):
     """Multi-Scale Structural Similarity Index Loss
     
     This loss function computes SSIM at multiple scales to capture both 
@@ -395,7 +395,16 @@ class MultiScaleSSIMLoss(BaseLoss):
         
         # Return mean values across spatial dimensions
         # Keep batch dimension, only average over spatial dimensions (H, W)
-        return (luminance * contrast_structure).mean(dim=[2, 3]), contrast_structure.mean(dim=[2, 3])
+        ssim = (luminance * contrast_structure).mean(dim=[2, 3])
+        cs = contrast_structure.mean(dim=[2, 3])
+        
+        # If single channel, squeeze the channel dimension
+        if ssim.dim() == 2 and ssim.size(1) == 1:
+            ssim = ssim.squeeze(1)
+        if cs.dim() == 2 and cs.size(1) == 1:
+            cs = cs.squeeze(1)
+            
+        return ssim, cs
     
     def _downsample(self, x: torch.Tensor) -> torch.Tensor:
         """Downsample image by factor of 2
@@ -467,14 +476,7 @@ class MultiScaleSSIMLoss(BaseLoss):
                 
                 # Check if images are getting too small
                 if pred.size(-1) < window_size or pred.size(-2) < window_size:
-                    # If images are too small, stop and adjust weights
-                    remaining_scales = self.scales - scale - 1
-                    if remaining_scales > 0:
-                        # Redistribute remaining weight to current scale
-                        weight_sum = self.scale_weights[scale:].sum()
-                        self.scale_weights = self.scale_weights[:scale+1]
-                        self.scale_weights[-1] = weight_sum
-                        self.scale_weights = self.scale_weights / self.scale_weights.sum()
+                    # If images are too small, stop early
                     break
         
         # Compute MS-SSIM
@@ -485,16 +487,35 @@ class MultiScaleSSIMLoss(BaseLoss):
             # Combine contrast-structure values with final SSIM
             mcs_stack = torch.stack(mcs_values)
             
+            # Calculate actual number of scales used
+            num_scales_used = len(mcs_values) + 1  # +1 for final SSIM
+            
+            # Normalize weights for actual scales used
+            if num_scales_used < self.scales:
+                # Redistribute weights proportionally
+                weights_to_use = self.scale_weights[:num_scales_used].clone()
+                weights_to_use = weights_to_use / weights_to_use.sum()
+            else:
+                weights_to_use = self.scale_weights
+            
             # Apply weights to contrast-structure values
-            # mcs_stack shape: [num_scales, batch_size]
-            # weights shape: [num_scales, 1] for broadcasting
+            # mcs_stack shape: [num_scales-1, batch_size]
+            # weights shape: [num_scales-1] -> reshape to [num_scales-1, 1] for broadcasting
+            cs_weights = weights_to_use[:len(mcs_values)].view(-1, 1)
+            
+            # Debug shapes
+            if mcs_stack.dim() == 3:
+                # If mcs_stack has an extra channel dimension, squeeze it
+                mcs_stack = mcs_stack.squeeze(2)
+            
             mcs_weighted = torch.prod(
-                torch.pow(mcs_stack, self.scale_weights[:len(mcs_values)].unsqueeze(-1)),
+                torch.pow(mcs_stack, cs_weights),
                 dim=0  # Product over scales, keep batch dimension
             )
             
             # Combine with final SSIM
-            ms_ssim = mcs_weighted * (final_ssim ** self.scale_weights[-1])
+            final_weight = weights_to_use[-1]
+            ms_ssim = mcs_weighted * (final_ssim ** final_weight)
         
         # Return loss (1 - MS-SSIM)
         # Average over batch dimension to get scalar loss
@@ -505,6 +526,123 @@ class MultiScaleSSIMLoss(BaseLoss):
         return (f"MultiScaleSSIMLoss(weight={self.weight}, scales={self.scales}, "
                 f"scale_weights={self.scale_weights.tolist()}, "
                 f"downsample_method={self.downsample_method})")
+
+
+class MultiScaleSSIMLoss(BaseLoss):
+    """Simplified Multi-Scale SSIM Loss for single channel images
+    
+    A streamlined implementation that focuses on stability and ease of use.
+    Replaces the complex version with a simpler, more robust implementation.
+    
+    Args:
+        num_scales (int): Number of scales to use (default: 3)
+        window_size (int): Size of the Gaussian window (default: 11)
+        weight (float): Weight for this loss component
+    """
+    
+    def __init__(self, num_scales: int = 3, window_size: int = 11, 
+                 weight: float = 1.0, **kwargs):
+        super().__init__(weight)
+        self.window_size = window_size
+        self.num_scales = num_scales
+        # Accept 'scales' parameter for backward compatibility
+        if 'scales' in kwargs:
+            self.num_scales = kwargs['scales']
+        
+        # Fixed weights for each scale
+        if self.num_scales == 1:
+            self.scale_weights = [1.0]
+        elif self.num_scales == 2:
+            self.scale_weights = [0.6, 0.4]
+        elif self.num_scales == 3:
+            self.scale_weights = [0.5, 0.3, 0.2]
+        else:
+            # For more scales, distribute weights evenly
+            self.scale_weights = [1.0 / self.num_scales] * self.num_scales
+        
+        # Constants for SSIM
+        self.C1 = 0.01 ** 2
+        self.C2 = 0.03 ** 2
+        
+        # Create Gaussian window once
+        self.register_buffer('window', self._create_window(window_size))
+    
+    def _create_window(self, window_size):
+        """Create Gaussian window for SSIM calculation"""
+        sigma = 1.5
+        coords = torch.arange(window_size, dtype=torch.float32)
+        coords -= window_size // 2
+        g = torch.exp(-(coords ** 2) / (2.0 * sigma ** 2))
+        g = g / g.sum()
+        window = g.unsqueeze(1) @ g.unsqueeze(0)
+        window = window.unsqueeze(0).unsqueeze(0)
+        return window
+    
+    def _ssim(self, x, y, window_size=None):
+        """Calculate SSIM between two images"""
+        if window_size is None:
+            window_size = self.window_size
+            
+        # Use pre-created window
+        window = self.window.to(x.device)
+        
+        # Calculate means
+        mu1 = F.conv2d(x, window, padding=window_size//2)
+        mu2 = F.conv2d(y, window, padding=window_size//2)
+        
+        mu1_sq = mu1.pow(2)
+        mu2_sq = mu2.pow(2)
+        mu1_mu2 = mu1 * mu2
+        
+        # Calculate variances and covariance
+        sigma1_sq = F.conv2d(x * x, window, padding=window_size//2) - mu1_sq
+        sigma2_sq = F.conv2d(y * y, window, padding=window_size//2) - mu2_sq
+        sigma12 = F.conv2d(x * y, window, padding=window_size//2) - mu1_mu2
+        
+        # SSIM formula
+        ssim_map = ((2 * mu1_mu2 + self.C1) * (2 * sigma12 + self.C2)) / \
+                   ((mu1_sq + mu2_sq + self.C1) * (sigma1_sq + sigma2_sq + self.C2))
+        
+        # Return mean SSIM
+        return ssim_map.mean()
+    
+    def forward(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Calculate MS-SSIM loss"""
+        # Ensure inputs are 4D (B, C, H, W)
+        if pred.dim() == 3:
+            pred = pred.unsqueeze(1)
+            target = target.unsqueeze(1)
+        
+        device = pred.device
+        
+        # Calculate MS-SSIM
+        msssim_val = 0.0
+        
+        for scale in range(self.num_scales):
+            # Check if image is large enough for this scale
+            if pred.size(-1) < self.window_size or pred.size(-2) < self.window_size:
+                # If too small, use remaining weight on current scale
+                remaining_weight = sum(self.scale_weights[scale:])
+                ssim_val = self._ssim(pred, target)
+                msssim_val += remaining_weight * ssim_val
+                break
+            
+            # Calculate SSIM for this scale
+            ssim_val = self._ssim(pred, target)
+            msssim_val += self.scale_weights[scale] * ssim_val
+            
+            # Downsample for next scale (except last scale)
+            if scale < self.num_scales - 1:
+                pred = F.avg_pool2d(pred, kernel_size=2, stride=2)
+                target = F.avg_pool2d(target, kernel_size=2, stride=2)
+        
+        # Return loss (1 - MS-SSIM)
+        return 1.0 - msssim_val
+    
+    def __repr__(self) -> str:
+        return (f"{self.__class__.__name__}("
+                f"num_scales={self.num_scales}, "
+                f"window_size={self.window_size})")
         
         
 class SobelGradientLoss(BaseLoss):
@@ -541,7 +679,13 @@ class SobelGradientLoss(BaseLoss):
     
 # ==================== Focal Frequency Loss (Official Implementation) ====================
 # version adaptation for PyTorch > 1.7.1
-IS_HIGH_VERSION = tuple(map(int, torch.__version__.split('+')[0].split('.'))) > (1, 7, 1)
+try:
+    # Handle version strings like "2.0.0", "1.8.0+cu111", "2.0.0.dev20230101"
+    version_parts = torch.__version__.split('+')[0].split('.')[:3]  # Take only first 3 parts
+    IS_HIGH_VERSION = tuple(map(int, [p.split('dev')[0] for p in version_parts if p.split('dev')[0]])) > (1, 7, 1)
+except:
+    # If parsing fails, assume high version
+    IS_HIGH_VERSION = True
 if IS_HIGH_VERSION:
     import torch.fft
 
@@ -732,7 +876,16 @@ class SyntheticAnomalyGenerator:
     
     def generate_anomaly(self, image):
         """Generate synthetic bright or dark spot anomaly"""
+        # Handle both single image and batch
+        if image.dim() == 3:  # Single image (C, H, W)
+            image = image.unsqueeze(0)  # Add batch dimension
+            single_image = True
+        else:
+            single_image = False
+            
         if random.random() > self.anomaly_prob:
+            if single_image:
+                return image.squeeze(0), torch.zeros_like(image.squeeze(0))
             return image, torch.zeros_like(image)
         
         # Clone image to avoid modifying original
@@ -742,6 +895,11 @@ class SyntheticAnomalyGenerator:
         # Generate bright or dark spot
         anomaly_image, mask = self._generate_spot_anomaly(anomaly_image)
         
+        # Remove batch dimension if it was a single image
+        if single_image:
+            anomaly_image = anomaly_image.squeeze(0)
+            mask = mask.squeeze(0)
+            
         return anomaly_image, mask
     
     def _generate_spot_anomaly(self, image):
@@ -814,25 +972,25 @@ class SyntheticAnomalyGenerator:
 # ==================== Network Architectures ====================
 class BaselineAutoencoder(nn.Module):
     """Standard autoencoder without skip connections"""
-    def __init__(self, latent_dim=128, input_size=(976, 176)):
+    def __init__(self, latent_dim=128, input_size=(1024, 1024)):
         super().__init__()
         self.input_size = input_size
         
         # Encoder with 3x3 kernels and SiLU activation
         self.encoder = nn.Sequential(
-            nn.Conv2d(1, 32, 3, 2, 1),  # 976x176 -> 488x88
+            nn.Conv2d(1, 32, 3, 2, 1),  # /2 downsampling
             nn.BatchNorm2d(32),
             nn.SiLU(inplace=True),
-            nn.Conv2d(32, 64, 3, 2, 1),  # 488x88 -> 244x44
+            nn.Conv2d(32, 64, 3, 2, 1),  # /2 downsampling
             nn.BatchNorm2d(64),
             nn.SiLU(inplace=True),
-            nn.Conv2d(64, 128, 3, 2, 1), # 244x44 -> 122x22
+            nn.Conv2d(64, 128, 3, 2, 1), # /2 downsampling
             nn.BatchNorm2d(128),
             nn.SiLU(inplace=True),
-            nn.Conv2d(128, 256, 3, 2, 1), # 122x22 -> 61x11
+            nn.Conv2d(128, 256, 3, 2, 1), # /2 downsampling
             nn.BatchNorm2d(256),
             nn.SiLU(inplace=True),
-            nn.Conv2d(256, 512, 3, 2, 0), # 61x11 -> 30x5 (no decimals)
+            nn.Conv2d(256, 512, 3, 2, 1), # /2 downsampling
             nn.BatchNorm2d(512),
             nn.SiLU(inplace=True),
         )
@@ -855,7 +1013,7 @@ class BaselineAutoencoder(nn.Module):
         
         # Decoder with matching kernels for proper upsampling
         self.decoder = nn.ModuleList([
-            nn.ConvTranspose2d(512, 256, 3, 2, 0, output_padding=1),  # 30x5 -> 61x11
+            nn.ConvTranspose2d(512, 256, 3, 2, 1, output_padding=1),  # Matches encoder
             nn.BatchNorm2d(256),
             nn.SiLU(inplace=True),
             nn.ConvTranspose2d(256, 128, 3, 2, 1, output_padding=1),
@@ -909,7 +1067,7 @@ class EnhancedAutoencoder(nn.Module):
         
         # Final encoder layer to match BaselineAutoencoder
         self.enc_final = nn.Sequential(
-            nn.Conv2d(512, 512, 3, 2, 0),  # 61x11 -> 30x5 (no decimals)
+            nn.Conv2d(512, 512, 3, 2, 1),  # Supports various input sizes
             nn.BatchNorm2d(512),
             nn.SiLU(inplace=True)
         )
@@ -932,7 +1090,7 @@ class EnhancedAutoencoder(nn.Module):
         self.dec1 = self._conv_block(32 + 32, 32)     # Skip from enc1
         
         # Precise upsampling layer for bottleneck
-        self.bottleneck_upsample = nn.ConvTranspose2d(512, 512, 3, 2, 0, output_padding=1)  # 30x5 -> 61x11
+        self.bottleneck_upsample = nn.ConvTranspose2d(512, 512, 3, 2, 1, output_padding=1)  # Matches encoder
         
         self.final = nn.Conv2d(32, 1, 1)
         self.pool = nn.MaxPool2d(2, 2)
@@ -957,14 +1115,14 @@ class EnhancedAutoencoder(nn.Module):
         e5 = self.enc5(self.pool(e4))
         
         # Final encoding step
-        e_final = self.enc_final(e5)  # 61x11 -> 30x5
+        e_final = self.enc_final(e5)  # Additional /2 downsampling
         
         # Bottleneck
         b = self.bottleneck(e_final)
         
         # Decoding with skip connections
         # Use precise transposed convolution for upsampling
-        b_up = self.bottleneck_upsample(b)  # 30x5 -> 61x11
+        b_up = self.bottleneck_upsample(b)  # x2 upsampling
         d5 = self.dec5(torch.cat([b_up, e5], dim=1))
         d4 = self.dec4(torch.cat([self.upsample(d5), e4], dim=1))
         d3 = self.dec3(torch.cat([self.upsample(d4), e3], dim=1))
@@ -1254,7 +1412,7 @@ def main():
         'batch_size': 16,
         'num_epochs': 100,
         'lr': 1e-3,
-        'image_size': (976, 176),  # Updated size
+        'image_size': (1024, 1024),  # Now supports square images
         'architecture': 'enhanced',  # 'baseline' or 'enhanced'
         'use_synthetic_anomalies': True,
         # Loss function configuration - adjust weights and parameters freely
