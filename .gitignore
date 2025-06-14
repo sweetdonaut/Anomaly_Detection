@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Models
+models/
+*.pth
+*.pt
+*.pkl
+
+# Logs
+logs/
+*.log
+
+# Data
+MVTec_AD_dataset/
+data/
+*.csv
+
+# Results
+results/
+outputs/
+*.png
+*.jpg
+*.jpeg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Others
+.env
+*.bak
+*.tmp
