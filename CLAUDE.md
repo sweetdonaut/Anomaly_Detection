@@ -9,6 +9,35 @@
 
 這是一個基於重建模型的無監督異常檢測系統，專為工業缺陷檢測設計。系統僅使用正常影像訓練自編碼器，透過分析重建誤差來檢測異常。專案實作了模組化架構，支援多種損失函數、合成異常生成和完整的評估指標。
 
+## 專案結構（模組化版本）
+
+```
+src/
+├── main.py                 # 主訓練程式
+├── losses/                 # 損失函數模組
+│   ├── base.py            # 基礎損失類別
+│   ├── mse.py             # MSE 損失
+│   ├── ssim.py            # SSIM 損失
+│   ├── ms_ssim.py         # Multi-Scale SSIM 損失
+│   ├── sobel.py           # Sobel 梯度損失
+│   ├── focal_frequency.py # Focal Frequency 損失
+│   └── manager.py         # 模組化損失管理器
+├── models/                 # 模型架構
+│   ├── baseline.py        # 基礎自編碼器
+│   └── enhanced.py        # 增強型自編碼器（U-Net風格）
+├── datasets/              # 資料集載入器
+│   └── mvtec.py          # MVTec AD 資料集
+├── utils/                 # 工具函數
+│   ├── synthetic_anomaly.py  # 合成異常生成器
+│   ├── latent_analyzer.py    # 潛在空間分析器
+│   └── training.py           # 訓練相關函數
+├── visualization/         # 視覺化工具
+│   └── visualizer.py     # 異常視覺化器
+├── test/                  # 測試檔案
+│   └── test_modular.py   # 模組化測試
+└── backup/               # 原始檔案備份（v1-v4）
+```
+
 ## 架構設計
 
 ### 核心組件
@@ -25,7 +54,7 @@
 2. **雙重網路架構**
    - **BaselineAutoencoder**：無跳躍連接的標準自編碼器，強制資訊壓縮
    - **EnhancedAutoencoder**：具有 U-Net 風格跳躍連接，精確缺陷定位
-   - 兩種架構都針對單通道 976×176 影像優化
+   - 兩種架構都支援可變輸入尺寸（預設 1024×1024）
 
 3. **合成異常生成器 (SyntheticAnomalyGenerator)**
    - 生成亮點/暗點異常，外觀真實
@@ -45,8 +74,8 @@
 
 ## 主要特色
 
-- **影像尺寸**：976×176 像素（灰階單通道）
-- **模組化設計**：便於實驗不同配置
+- **影像尺寸**：支援任意尺寸，預設 1024×1024 像素（灰階單通道）
+- **模組化設計**：便於實驗不同配置和擴展功能
 - **訓練模式**：支援有/無合成異常的訓練
 - **保守資料增強**：縮放係數 0.95-1.05
 - **綜合異常評分**：結合重建誤差和潛在空間分析
@@ -55,27 +84,38 @@
 
 ## 常用指令
 
-### 訓練最新版模型 (v3)
+### 訓練模組化版本
 ```bash
-python MVTec_unsupervised/anomaly_detection_v3.py
+cd src
+python main.py
 ```
 
-### 訓練前一版模型 (v2)
+### 執行測試
 ```bash
-python MVTec_unsupervised/anomaly_detection_v2.py
+cd src/test
+python test_modular.py
+```
+
+### 訓練舊版模型（備份檔案）
+```bash
+# v4 版本（最新的單檔案版本）
+python src/backup/anomaly_detection_v4.py
+
+# v3 版本
+python src/backup/anomaly_detection_v3.py
 ```
 
 ## 配置設定
 
-主要配置參數（在 `main()` 函數中）：
+主要配置參數（在 `src/main.py` 中）：
 ```python
 config = {
     'device': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
     'batch_size': 16,
     'num_epochs': 100,
     'lr': 1e-3,
-    'image_size': (976, 176),
-    'architecture': 'enhanced',  # 'baseline' 或 'enhanced'
+    'image_size': (1024, 1024),  # 支援任意尺寸
+    'architecture': 'enhanced',    # 'baseline' 或 'enhanced'
     'use_synthetic_anomalies': True,
     'loss_config': {
         # MSE Loss: 基本像素級重建
@@ -128,10 +168,48 @@ config = {
 ```python
 'loss_config': {
     'mse': {'class': MSELoss, 'weight': 0.3},
-    'ms_ssim': {'class': MultiScaleSSIMLoss, 'weight': 0.5, 'params': {'scales': 3}},
+    'ms_ssim': {'class': MultiScaleSSIMLoss, 'weight': 0.5, 'params': {'num_scales': 3}},
     'sobel': {'class': SobelGradientLoss, 'weight': 0.2}
 }
 ```
+
+## 擴展指南
+
+### 新增自訂損失函數
+
+1. 在 `src/losses/` 建立新檔案：
+```python
+# src/losses/custom_loss.py
+from .base import BaseLoss
+
+class CustomLoss(BaseLoss):
+    def __init__(self, weight=1.0, custom_param=0.5):
+        super().__init__(weight)
+        self.custom_param = custom_param
+    
+    def forward(self, pred, target):
+        # 實作損失計算
+        loss = ...
+        return loss
+```
+
+2. 在 `src/losses/__init__.py` 中導入：
+```python
+from .custom_loss import CustomLoss
+```
+
+3. 在配置中使用：
+```python
+'loss_config': {
+    'custom': {'class': CustomLoss, 'weight': 0.3, 'params': {'custom_param': 0.7}}
+}
+```
+
+### 新增模型架構
+
+1. 在 `src/models/` 建立新檔案
+2. 確保模型有 `forward()` 方法
+3. 在 `src/models/__init__.py` 中導入
 
 ## 實驗設計流程
 
@@ -151,27 +229,27 @@ config = {
    - 測試個別損失組件
    - 探索加權組合
 
-## 最新更新 (v3)
+## 最新更新（模組化版本）
 
-1. **增強的 SSIM Loss 實作**
-   - 詳細的文檔和參數驗證
-   - 動態通道支援與正確的設備處理
-   - 單樣本損失計算功能
+1. **完整模組化重構**
+   - 將單一檔案拆分為功能明確的模組
+   - 保持與 v4 版本完全相同的功能
+   - 提升代碼可維護性和可擴展性
 
-2. **新增 Multi-Scale SSIM Loss**
-   - 同時捕捉細節與全局結構
-   - 可配置尺度與預設權重
-   - 自動調整小影像處理
+2. **改進的專案結構**
+   - 清晰的目錄組織
+   - 統一的 API 設計
+   - 獨立的測試框架
 
-3. **統一的損失函數架構**
-   - 所有損失函數現在都繼承自 `BaseLoss`
-   - 跨損失函數的一致權重管理
-   - 改進與 `ModularLossManager` 的相容性
+3. **支援彈性配置**
+   - 可變影像尺寸支援
+   - 動態 CPU 工作執行緒配置
+   - 易於新增自訂組件
 
-4. **完整英文介面**
-   - 所有程式碼註解和文檔使用英文
-   - 為純英文環境準備的生產就緒程式碼
-   - 保持清晰度和技術準確性
+4. **增強的 MS-SSIM 實作**
+   - 簡化版本提升穩定性
+   - 修正梯度流問題
+   - 支援所有影像尺寸
 
 ## 相依套件
 
@@ -186,3 +264,4 @@ config = {
 - scikit-learn（用於評估指標）
 - opencv-python（用於合成異常生成）
 - typing（用於型別提示）
+- multiprocessing（用於優化資料載入）
