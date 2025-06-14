@@ -240,23 +240,23 @@ class BaselineAutoencoder(nn.Module):
         super().__init__()
         self.input_size = input_size
         
-        # Encoder with proper padding calculation
+        # Encoder with 3x3 kernels and SiLU activation
         self.encoder = nn.Sequential(
-            nn.Conv2d(1, 32, 4, 2, 1),  # 976x176 -> 488x88
+            nn.Conv2d(1, 32, 3, 2, 1),  # 976x176 -> 488x88
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(32, 64, 4, 2, 1),  # 488x88 -> 244x44
+            nn.SiLU(inplace=True),
+            nn.Conv2d(32, 64, 3, 2, 1),  # 488x88 -> 244x44
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, 4, 2, 1), # 244x44 -> 122x22
+            nn.SiLU(inplace=True),
+            nn.Conv2d(64, 128, 3, 2, 1), # 244x44 -> 122x22
             nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(128, 256, 4, 2, 1), # 122x22 -> 61x11
+            nn.SiLU(inplace=True),
+            nn.Conv2d(128, 256, 3, 2, 1), # 122x22 -> 61x11
             nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(256, 512, 4, 2, 1), # 61x11 -> 30.5x5.5 (needs handling)
+            nn.SiLU(inplace=True),
+            nn.Conv2d(256, 512, 3, 2, 0), # 61x11 -> 30x5 (no decimals)
             nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
         )
         
         # Calculate encoder output size dynamically
@@ -269,27 +269,27 @@ class BaselineAutoencoder(nn.Module):
         self.bottleneck = nn.Sequential(
             nn.Conv2d(512, latent_dim, 1),
             nn.BatchNorm2d(latent_dim),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
             nn.Conv2d(latent_dim, 512, 1),
             nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
         )
         
-        # Decoder with output padding to match input size
+        # Decoder with matching kernels for proper upsampling
         self.decoder = nn.ModuleList([
-            nn.ConvTranspose2d(512, 256, 4, 2, 1),  # Upsample
+            nn.ConvTranspose2d(512, 256, 3, 2, 0, output_padding=1),  # 30x5 -> 61x11
             nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(256, 128, 4, 2, 1),
+            nn.SiLU(inplace=True),
+            nn.ConvTranspose2d(256, 128, 3, 2, 1, output_padding=1),
             nn.BatchNorm2d(128),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(128, 64, 4, 2, 1),
+            nn.SiLU(inplace=True),
+            nn.ConvTranspose2d(128, 64, 3, 2, 1, output_padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(64, 32, 4, 2, 1),
+            nn.SiLU(inplace=True),
+            nn.ConvTranspose2d(64, 32, 3, 2, 1, output_padding=1),
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            nn.ConvTranspose2d(32, 1, 4, 2, 1),
+            nn.SiLU(inplace=True),
+            nn.ConvTranspose2d(32, 1, 3, 2, 1, output_padding=1),
             nn.Sigmoid()
         ])
     
@@ -329,14 +329,21 @@ class EnhancedAutoencoder(nn.Module):
         self.enc4 = self._conv_block(128, 256)
         self.enc5 = self._conv_block(256, 512)
         
+        # Final encoder layer to match BaselineAutoencoder
+        self.enc_final = nn.Sequential(
+            nn.Conv2d(512, 512, 3, 2, 0),  # 61x11 -> 30x5 (no decimals)
+            nn.BatchNorm2d(512),
+            nn.SiLU(inplace=True)
+        )
+        
         # Bottleneck
         self.bottleneck = nn.Sequential(
             nn.Conv2d(512, 256, 1),
             nn.BatchNorm2d(256),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
             nn.Conv2d(256, 512, 1),
             nn.BatchNorm2d(512),
-            nn.ReLU(inplace=True)
+            nn.SiLU(inplace=True)
         )
         
         # Decoder blocks with skip connections
@@ -354,10 +361,10 @@ class EnhancedAutoencoder(nn.Module):
         return nn.Sequential(
             nn.Conv2d(in_ch, out_ch, 3, padding=1),
             nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True),
+            nn.SiLU(inplace=True),
             nn.Conv2d(out_ch, out_ch, 3, padding=1),
             nn.BatchNorm2d(out_ch),
-            nn.ReLU(inplace=True)
+            nn.SiLU(inplace=True)
         )
     
     def forward(self, x):
@@ -368,11 +375,16 @@ class EnhancedAutoencoder(nn.Module):
         e4 = self.enc4(self.pool(e3))
         e5 = self.enc5(self.pool(e4))
         
+        # Final encoding step
+        e_final = self.enc_final(e5)  # 61x11 -> 30x5
+        
         # Bottleneck
-        b = self.bottleneck(self.pool(e5))
+        b = self.bottleneck(e_final)
         
         # Decoding with skip connections
-        d5 = self.dec5(torch.cat([self.upsample(b), e5], dim=1))
+        # First upsample from bottleneck
+        b_up = F.interpolate(b, size=e5.shape[2:], mode='bilinear', align_corners=False)
+        d5 = self.dec5(torch.cat([b_up, e5], dim=1))
         d4 = self.dec4(torch.cat([self.upsample(d5), e4], dim=1))
         d3 = self.dec3(torch.cat([self.upsample(d4), e3], dim=1))
         d2 = self.dec2(torch.cat([self.upsample(d3), e2], dim=1))
@@ -424,7 +436,6 @@ class MVTecDataset(Dataset):
         # Conservative augmentation
         if use_augmentation and split == 'train':
             self.augmentation = transforms.Compose([
-                transforms.RandomRotation(degrees=5),  # ±5 degrees
                 transforms.RandomAffine(degrees=0, scale=(0.95, 1.05)),  # 0.95-1.05 scale
             ])
         else:
