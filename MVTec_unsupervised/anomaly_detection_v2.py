@@ -23,27 +23,32 @@ class ModularLossFunction(nn.Module):
                  use_focal_freq=True, focal_freq_weight=0.2,
                  use_sobel=True, sobel_weight=0.2):
         super().__init__()
+        
+        # Check if at least one loss component is enabled
+        if not any([use_mse, use_ssim, use_focal_freq, use_sobel]):
+            raise ValueError("At least one loss component must be enabled")
+        
         self.use_mse = use_mse
-        self.mse_weight = mse_weight
+        self.mse_weight = mse_weight if use_mse else 0
         self.use_ssim = use_ssim
-        self.ssim_weight = ssim_weight
+        self.ssim_weight = ssim_weight if use_ssim else 0
         self.use_focal_freq = use_focal_freq
-        self.focal_freq_weight = focal_freq_weight
+        self.focal_freq_weight = focal_freq_weight if use_focal_freq else 0
         self.use_sobel = use_sobel
-        self.sobel_weight = sobel_weight
+        self.sobel_weight = sobel_weight if use_sobel else 0
         
-        # Normalize weights
-        total_weight = 0
-        if use_mse: total_weight += mse_weight
-        if use_ssim: total_weight += ssim_weight
-        if use_focal_freq: total_weight += focal_freq_weight
-        if use_sobel: total_weight += sobel_weight
+        # Calculate total weight for normalization
+        total_weight = (self.mse_weight + self.ssim_weight + 
+                       self.focal_freq_weight + self.sobel_weight)
         
-        if total_weight > 0:
-            if use_mse: self.mse_weight /= total_weight
-            if use_ssim: self.ssim_weight /= total_weight
-            if use_focal_freq: self.focal_freq_weight /= total_weight
-            if use_sobel: self.sobel_weight /= total_weight
+        if total_weight <= 0:
+            raise ValueError("Total weight of enabled components must be positive")
+        
+        # Normalize weights to sum to 1
+        self.mse_weight /= total_weight
+        self.ssim_weight /= total_weight
+        self.focal_freq_weight /= total_weight
+        self.sobel_weight /= total_weight
     
     def forward(self, recon, target):
         losses = {}
@@ -259,9 +264,11 @@ class SyntheticAnomalyGenerator:
 # ==================== Network Architectures ====================
 class BaselineAutoencoder(nn.Module):
     """Standard autoencoder without skip connections"""
-    def __init__(self, latent_dim=128):
+    def __init__(self, latent_dim=128, input_size=(976, 176)):
         super().__init__()
-        # Encoder
+        self.input_size = input_size
+        
+        # Encoder with proper padding calculation
         self.encoder = nn.Sequential(
             nn.Conv2d(1, 32, 4, 2, 1),  # 976x176 -> 488x88
             nn.BatchNorm2d(32),
@@ -275,10 +282,16 @@ class BaselineAutoencoder(nn.Module):
             nn.Conv2d(128, 256, 4, 2, 1), # 122x22 -> 61x11
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
-            nn.Conv2d(256, 512, 4, 2, 1), # 61x11 -> 31x6 (approximately)
+            nn.Conv2d(256, 512, 4, 2, 1), # 61x11 -> 30.5x5.5 (needs handling)
             nn.BatchNorm2d(512),
             nn.ReLU(inplace=True),
         )
+        
+        # Calculate encoder output size dynamically
+        with torch.no_grad():
+            dummy_input = torch.zeros(1, 1, *input_size)
+            encoder_output = self.encoder(dummy_input)
+            self.encoder_output_size = encoder_output.shape[2:]
         
         # Bottleneck
         self.bottleneck = nn.Sequential(
@@ -290,8 +303,8 @@ class BaselineAutoencoder(nn.Module):
             nn.ReLU(inplace=True),
         )
         
-        # Decoder
-        self.decoder = nn.Sequential(
+        # Decoder with output padding to match input size
+        self.decoder = nn.ModuleList([
             nn.ConvTranspose2d(512, 256, 4, 2, 1),  # Upsample
             nn.BatchNorm2d(256),
             nn.ReLU(inplace=True),
@@ -306,16 +319,27 @@ class BaselineAutoencoder(nn.Module):
             nn.ReLU(inplace=True),
             nn.ConvTranspose2d(32, 1, 4, 2, 1),
             nn.Sigmoid()
-        )
+        ])
     
     def forward(self, x):
+        # Store original size
+        original_size = x.shape[2:]
+        
         # Encode
         encoded = self.encoder(x)
         # Bottleneck
         bottleneck = self.bottleneck(encoded)
-        # Decode
-        decoded = self.decoder(bottleneck)
-        return decoded
+        
+        # Decode with proper layer handling
+        x = bottleneck
+        for i, layer in enumerate(self.decoder):
+            x = layer(x)
+        
+        # Resize to match original input size if needed
+        if x.shape[2:] != original_size:
+            x = F.interpolate(x, size=original_size, mode='bilinear', align_corners=False)
+        
+        return x
     
     def get_latent_features(self, x):
         """Extract latent space features"""
@@ -452,10 +476,14 @@ class MVTecDataset(Dataset):
         if self.transform:
             image = self.transform(image)
         
-        # Generate synthetic anomaly for training
+        # For training with synthetic anomalies
         if self.synthetic_anomaly_generator and self.split == 'train':
-            image, anomaly_mask = self.synthetic_anomaly_generator.generate_anomaly(image)
-            return image, anomaly_mask
+            # Store clean image
+            clean_image = image.clone()
+            # Generate anomaly
+            anomaly_image, anomaly_mask = self.synthetic_anomaly_generator.generate_anomaly(image)
+            # Return clean image, anomaly image, and mask
+            return clean_image, anomaly_image, anomaly_mask
         
         return image, label
 
@@ -584,10 +612,6 @@ def train_anomaly_model(model, train_loader, val_loader, config):
     # Initialize loss function
     criterion = ModularLossFunction(**config['loss_config'])
     
-    # Initialize synthetic anomaly generator if enabled
-    if config.get('use_synthetic_anomalies', False):
-        anomaly_generator = SyntheticAnomalyGenerator(anomaly_prob=0.3)
-    
     best_val_loss = float('inf')
     
     for epoch in range(config['num_epochs']):
@@ -597,22 +621,24 @@ def train_anomaly_model(model, train_loader, val_loader, config):
         
         for batch in tqdm(train_loader, desc=f'Epoch {epoch+1}/{config["num_epochs"]}'):
             if config.get('use_synthetic_anomalies', False):
-                images, anomaly_masks = batch
-            else:
-                images, _ = batch
+                # Dataset returns clean_images, anomaly_images, anomaly_masks
+                clean_images, anomaly_images, anomaly_masks = batch
+                clean_images = clean_images.to(device)
+                anomaly_images = anomaly_images.to(device)
+                anomaly_masks = anomaly_masks.to(device)
                 
-            images = images.to(device)
-            
-            # Generate synthetic anomalies if enabled
-            if config.get('use_synthetic_anomalies', False) and anomaly_masks.sum() > 0:
-                target = images.clone()  # Original clean image
-                anomaly_images = images  # Already contains anomalies
+                # Use clean images as target and anomaly images as input
+                target = clean_images
+                input_images = anomaly_images
             else:
+                # Normal training without synthetic anomalies
+                images, _ = batch
+                images = images.to(device)
                 target = images
-                anomaly_images = images
+                input_images = images
             
             # Forward pass
-            recon = model(anomaly_images)
+            recon = model(input_images)
             loss_dict = criterion(recon, target)
             
             # Backward pass
