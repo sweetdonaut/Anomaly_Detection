@@ -20,6 +20,8 @@ build/
 *.swp
 *.swo
 
+# out
+out/
 
 # Logs
 logs/
@@ -45,3 +47,6 @@ Thumbs.db
 .env
 *.bak
 *.tmp
+
+# claude
+.claude/
