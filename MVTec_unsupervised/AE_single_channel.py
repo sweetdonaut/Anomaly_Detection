@@ -368,55 +368,6 @@ def inference_grayscale(model_path, image_path, category, device='cuda'):
     
     return heatmap, reconstruction
 
-def inference_grayscale_tensor(model_path, image_tensor, category, device='cuda'):
-    """
-    Perform anomaly detection on a grayscale tensor input
-    """
-    # Initialize model and load weights
-    model = GrayscaleAnomalyAutoencoder()
-    checkpoint = torch.load(model_path, map_location='cpu')
-    model.load_state_dict(checkpoint)
-    model.to(device)
-    model.eval()
-    
-    # Ensure tensor is on correct device
-    if image_tensor.dim() == 3:
-        image_tensor = image_tensor.unsqueeze(0)
-    image_tensor = image_tensor.to(device)
-    
-    # Initialize detector and generate heatmap
-    detector = GrayscaleAnomalyDetector(model, device)
-    heatmap, reconstruction = detector.generate_heatmap(image_tensor)
-    
-    # Visualize results
-    plt.figure(figsize=(15, 5))
-    
-    plt.subplot(131)
-    plt.imshow(image_tensor[0, 0].cpu(), cmap='gray')
-    plt.title('Original Image')
-    plt.axis('off')
-    
-    plt.subplot(132)
-    plt.imshow(reconstruction[0, 0].cpu(), cmap='gray')
-    plt.title('Reconstruction')
-    plt.axis('off')
-    
-    plt.subplot(133)
-    plt.imshow(heatmap, cmap='hot')
-    plt.title('Anomaly Heatmap')
-    plt.colorbar()
-    plt.axis('off')
-    
-    plt.tight_layout()
-    output_path = f'grayscale_inference_{category}_tensor_result.png'
-    plt.savefig(output_path, dpi=150, bbox_inches='tight')
-    plt.show()
-    
-    print(f"Results saved to: {output_path}")
-    print(f"Max anomaly score: {heatmap.max():.4f}")
-    print(f"Mean anomaly score: {heatmap.mean():.4f}")
-    
-    return heatmap, reconstruction
 
 # Main execution
 def main():
