@@ -60,7 +60,7 @@ class SyntheticAnomalyGenerator:
         mask = torch.zeros((H, W))
         
         # Random anomaly size (as percentage of image size)
-        size_factor = np.random.uniform(0.02, 0.08)  # 2-8% of image
+        size_factor = np.random.uniform(0.05, 0.10)  # 2-8% of image
         anomaly_h = int(H * size_factor)
         anomaly_w = int(W * size_factor)
         

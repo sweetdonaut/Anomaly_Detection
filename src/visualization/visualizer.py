@@ -18,31 +18,34 @@ class AnomalyVisualizer:
     def visualize_reconstruction(self, original, reconstruction, anomaly_map, 
                                save_name=None, show=True):
         """Visualize original, reconstruction, and anomaly heatmap"""
-        plt.figure(figsize=(15, 5))
+        # Create figure with reduced width and proper aspect ratio for vertical images
+        fig, axes = plt.subplots(1, 3, figsize=(6, 8))
         
         # Original image
-        plt.subplot(131)
-        plt.imshow(original.squeeze().cpu().numpy(), cmap='gray')
-        plt.title('Original Image')
-        plt.axis('off')
+        axes[0].imshow(original.squeeze().cpu().numpy(), cmap='gray')
+        axes[0].set_title('Original', fontsize=10)
+        axes[0].axis('off')
         
         # Reconstruction
-        plt.subplot(132)
-        plt.imshow(reconstruction.squeeze().cpu().numpy(), cmap='gray')
-        plt.title('Reconstruction')
-        plt.axis('off')
+        axes[1].imshow(reconstruction.squeeze().cpu().numpy(), cmap='gray')
+        axes[1].set_title('Reconstruction', fontsize=10)
+        axes[1].axis('off')
         
         # Anomaly heatmap
-        plt.subplot(133)
-        plt.imshow(anomaly_map, cmap='hot')
-        plt.title('Anomaly Heatmap')
-        plt.colorbar()
-        plt.axis('off')
+        im = axes[2].imshow(anomaly_map, cmap='hot')
+        axes[2].set_title('Anomaly Map', fontsize=10)
+        axes[2].axis('off')
         
-        plt.tight_layout()
+        # Add colorbar with adjusted size
+        cbar = plt.colorbar(im, ax=axes[2], fraction=0.046, pad=0.04)
+        cbar.ax.tick_params(labelsize=8)
+        
+        # Reduce spacing between subplots
+        plt.subplots_adjust(wspace=0.05, hspace=0.05)
         
         if save_name:
-            plt.savefig(os.path.join(self.save_dir, save_name), dpi=150, bbox_inches='tight')
+            plt.savefig(os.path.join(self.save_dir, save_name), 
+                       dpi=150, bbox_inches='tight', pad_inches=0.1)
         
         if show:
             plt.show()

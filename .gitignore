@@ -32,6 +32,10 @@ MVTec_AD_dataset/
 data/
 *.csv
 
+# Data
+OpticalDataset/train
+OpticalDataset/test
+
 # Results
 results/
 outputs/
@@ -50,3 +54,6 @@ Thumbs.db
 
 # claude
 .claude/
+
+# test
+src/test/

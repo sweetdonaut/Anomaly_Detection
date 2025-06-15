@@ -1,27 +1,26 @@
 """
-Main Experiments Script (Clean Version)
-=======================================
+Main Production Script
+=====================
 
-Run multiple experiments with different configurations.
+Training on OpticalDataset for production environment.
 """
 
 import torch
-from torch.utils.data import DataLoader
-from torchvision import transforms
 import os
 from pathlib import Path
 from datetime import datetime
 
 # Import modular components
 from models import BaselineAutoencoder, EnhancedAutoencoder
-from datasets import MVTecDataset
+from datasets import OpticalDataset
 from losses import ModularLossManager
 from utils import (
     # Training utilities
     train_model,
-    evaluate_model,
     # Data utilities
     SyntheticAnomalyGenerator,
+    create_optical_dataloader,
+    evaluate_optical_model,
     # Model utilities
     get_device,
     # Experiment management
@@ -50,11 +49,8 @@ def train_experiment(config, experiment_name, base_output_dir):
     # Save configuration
     save_experiment_config(config, os.path.join(dirs['experiment'], 'training_config.json'))
     
-    # Data transforms
-    transform = transforms.Compose([
-        transforms.Resize(config['image_size']),
-        transforms.ToTensor()  # This already normalizes to [0, 1]
-    ])
+    # Data transforms - OpticalDataset already returns tensors, no transform needed
+    transform = None
     
     # Initialize model
     if config['architecture'] == 'baseline':
@@ -72,20 +68,16 @@ def train_experiment(config, experiment_name, base_output_dir):
     print(f"Output directory: {dirs['experiment']}")
     print(f"{'='*50}\n")
     
-    # Training on MVTec grid category
-    category = 'grid'
-    
     # Create training dataset
-    train_dataset = MVTecDataset(
-        '/home/yclai/vscode_project/Anomaly_Detection/MVTec_AD_dataset',
-        category,
-        'train',
-        transform,
+    train_dataset = OpticalDataset(
+        '/home/yclai/vscode_project/Anomaly_Detection/OpticalDataset',
+        split='train',
+        transform=transform,
         use_augmentation=True,
         synthetic_anomaly_generator=SyntheticAnomalyGenerator() if config['use_synthetic_anomalies'] else None
     )
     
-    train_loader = DataLoader(
+    train_loader = create_optical_dataloader(
         train_dataset,
         batch_size=config['batch_size'],
         shuffle=True,
@@ -113,31 +105,24 @@ def train_experiment(config, experiment_name, base_output_dir):
     plot_loss_curves(train_history, dirs['history'], experiment_name)
     
     # Evaluate on test set
-    eval_results = evaluate_on_test_set(model, config, category, transform, experiment_name, dirs)
+    eval_results = evaluate_on_test_set(model, config, transform, experiment_name, dirs)
     
     print(f"\nExperiment {experiment_name} completed!")
     return dirs['experiment'], train_history, eval_results
 
 
-def evaluate_on_test_set(model, config, category, transform, experiment_name, dirs):
+def evaluate_on_test_set(model, config, transform, experiment_name, dirs):
     """Evaluate model on test set"""
     print("\nEvaluating on test set...")
     
-    # Check if test directory exists
-    test_path = Path('/home/yclai/vscode_project/Anomaly_Detection/MVTec_AD_dataset') / category / 'test'
-    if not test_path.exists():
-        print("Test directory not found, skipping evaluation")
-        return None
-    
     # Create test dataset
-    test_dataset = MVTecDataset(
-        '/home/yclai/vscode_project/Anomaly_Detection/MVTec_AD_dataset',
-        category,
-        'test',
-        transform
+    test_dataset = OpticalDataset(
+        '/home/yclai/vscode_project/Anomaly_Detection/OpticalDataset',
+        split='test',
+        transform=transform
     )
     
-    test_loader = DataLoader(
+    test_loader = create_optical_dataloader(
         test_dataset,
         batch_size=config['batch_size'],
         shuffle=False,
@@ -151,8 +136,8 @@ def evaluate_on_test_set(model, config, category, transform, experiment_name, di
     # Initialize loss manager for evaluation
     loss_manager = ModularLossManager(config['loss_config'], config['device'])
     
-    # Evaluate using utils function
-    scores, labels = evaluate_model(model, test_loader, loss_manager, config['device'])
+    # Evaluate using optical-specific function
+    scores, labels = evaluate_optical_model(model, test_loader, loss_manager, config['device'])
     
     # Visualize some results
     model.eval()
@@ -195,9 +180,9 @@ def main():
     base_config = {
         'device': device,
         'batch_size': 16,
-        'num_epochs': 100,
+        'num_epochs': 10,
         'lr': 1e-3,
-        'image_size': (256, 256),
+        'image_size': (176, 976),
         'use_synthetic_anomalies': True,  # Disable synthetic anomalies
         'num_workers': optimal_workers
     }

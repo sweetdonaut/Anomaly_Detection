@@ -10,6 +10,7 @@ from .train_utils import train_model, evaluate_model
 
 # Data utilities
 from .data_utils import SyntheticAnomalyGenerator
+from .optical_utils import create_optical_dataloader, evaluate_optical_model
 
 # Model utilities
 from .model_utils import get_device, LatentSpaceAnalyzer
@@ -45,6 +46,8 @@ __all__ = [
     
     # Data
     'SyntheticAnomalyGenerator',
+    'create_optical_dataloader',
+    'evaluate_optical_model',
     
     # Model
     'get_device',
