@@ -59,19 +59,26 @@ class SyntheticAnomalyGenerator:
         # Create anomaly mask
         mask = torch.zeros((H, W))
         
-        # Random anomaly size (as percentage of image size)
-        size_factor = np.random.uniform(0.05, 0.10)  # 2-8% of image
-        anomaly_h = int(H * size_factor)
-        anomaly_w = int(W * size_factor)
+        # Random anomaly size (as percentage of image size) - adjusted for narrow images
+        # For 176x976 images, we need smaller anomalies relative to width
+        size_factor = np.random.uniform(0.15, 0.25)  # 15-25% of min dimension
+        base_size = int(min(H, W) * size_factor)
         
-        # Make it elliptical
-        aspect_ratio = np.random.uniform(0.7, 1.3)
-        anomaly_h = int(anomaly_h * aspect_ratio)
-        anomaly_w = int(anomaly_w / aspect_ratio)
+        # For extremely elongated images, adjust aspect ratio accordingly
+        image_aspect_ratio = H / W
+        if image_aspect_ratio > 3:  # Very tall image
+            # Make anomalies more circular to avoid spanning entire width
+            aspect_ratio = np.random.uniform(0.8, 1.2)
+        else:
+            # Normal aspect ratio adjustment
+            aspect_ratio = np.random.uniform(0.7, 1.4)
+            
+        anomaly_h = int(base_size * aspect_ratio)
+        anomaly_w = int(base_size / aspect_ratio)
         
-        # Ensure minimum size
-        anomaly_h = max(10, anomaly_h)
-        anomaly_w = max(10, anomaly_w)
+        # Ensure minimum size but cap maximum width for narrow images
+        anomaly_h = max(15, anomaly_h)
+        anomaly_w = max(15, min(anomaly_w, int(W * 0.4)))  # Max 40% of width
         
         # Random position
         pos_h = np.random.randint(anomaly_h//2, H - anomaly_h//2)
@@ -85,13 +92,45 @@ class SyntheticAnomalyGenerator:
         mask_np = cv2.GaussianBlur(mask_np, (21, 21), 5)
         mask = torch.from_numpy(mask_np).float()
         
-        # Generate anomaly pattern (bright or dark spot)
-        if np.random.random() < 0.5:
-            # Bright spot
-            anomaly_value = torch.ones_like(image) * np.random.uniform(0.2, 0.4)
+        # Generate anomaly pattern with adaptive contrast
+        # Calculate the local statistics in the anomaly region
+        mask_region = mask > 0.5  # Use center of anomaly for statistics
+        if mask_region.any():
+            # Get the min and max values in the anomaly region
+            region_min = image[:, mask_region].min().item()
+            region_max = image[:, mask_region].max().item()
+            region_mean = image[:, mask_region].mean().item()
+            
+            # Adaptive anomaly value based on local brightness
+            # Ensure minimum contrast for visibility
+            MIN_CONTRAST = 0.2  # Minimum contrast difference for visibility
+            
+            if np.random.random() < 0.5:
+                # Bright spot - ensure we don't exceed 0.95
+                max_safe_value = 0.95
+                # Calculate how much we can safely increase
+                max_increase = max_safe_value - region_max
+                # Desired increase based on local mean
+                desired_increase = np.random.uniform(0.3, 0.5)
+                # Apply increase while ensuring minimum contrast and safety limits
+                actual_increase = max(MIN_CONTRAST, min(desired_increase, max_increase))
+                anomaly_value = torch.ones_like(image) * actual_increase
+            else:
+                # Dark spot - ensure we don't go below 0.05
+                min_safe_value = 0.05
+                # Calculate how much we can safely decrease
+                max_decrease = region_min - min_safe_value
+                # Desired decrease based on local mean
+                desired_decrease = np.random.uniform(0.3, 0.5)
+                # Apply decrease while ensuring minimum contrast and safety limits
+                actual_decrease = max(MIN_CONTRAST, min(desired_decrease, max_decrease))
+                anomaly_value = torch.ones_like(image) * -actual_decrease
         else:
-            # Dark spot
-            anomaly_value = torch.ones_like(image) * np.random.uniform(-0.4, -0.2)
+            # Fallback to conservative values if mask region is empty
+            if np.random.random() < 0.5:
+                anomaly_value = torch.ones_like(image) * 0.3
+            else:
+                anomaly_value = torch.ones_like(image) * -0.3
         
         # Apply anomaly
         for c in range(C):

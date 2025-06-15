@@ -33,8 +33,8 @@ data/
 *.csv
 
 # Data
-OpticalDataset/train
-OpticalDataset/test
+OpticalDataset/train/
+OpticalDataset/test/
 
 # Results
 results/

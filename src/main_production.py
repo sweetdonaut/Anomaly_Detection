@@ -38,9 +38,101 @@ from utils import (
     plot_comparison_curves
 )
 from visualization import AnomalyVisualizer
+import matplotlib.pyplot as plt
 
 
-def train_experiment(config, experiment_name, base_output_dir):
+def save_training_samples(train_loader, save_dir, num_samples=5):
+    """Save sample training images after transforms"""
+    import matplotlib.pyplot as plt
+    
+    saved_count = 0
+    
+    for batch_idx, batch_data in enumerate(train_loader):
+        if saved_count >= num_samples:
+            break
+            
+        # Handle different return formats from OpticalDataset
+        if isinstance(batch_data, tuple) and len(batch_data) == 3:
+            # Training with synthetic anomalies: (clean_images, anomaly_images, masks)
+            clean_images = batch_data[0]
+            anomaly_images = batch_data[1]
+            masks = batch_data[2]
+            has_anomalies = True
+        elif isinstance(batch_data, tuple) and len(batch_data) == 2:
+            # Normal mode with dummy labels: (images, labels)
+            clean_images = batch_data[0]
+            anomaly_images = None
+            has_anomalies = False
+        else:
+            # Just images
+            clean_images = batch_data
+            anomaly_images = None
+            has_anomalies = False
+            
+        # Save individual images from the batch
+        for img_idx in range(min(clean_images.shape[0], num_samples - saved_count)):
+            if has_anomalies and anomaly_images is not None:
+                # Create combined figure with 3 images
+                fig, axes = plt.subplots(1, 3, figsize=(6, 8))
+                
+                # Original image
+                clean_img = clean_images[img_idx].cpu()
+                if clean_img.shape[0] == 1:
+                    clean_img = clean_img.squeeze(0)
+                axes[0].imshow(clean_img.numpy(), cmap='gray', vmin=0, vmax=1)
+                axes[0].set_title('Original', fontsize=10)
+                axes[0].axis('off')
+                
+                # Anomaly image
+                anomaly_img = anomaly_images[img_idx].cpu()
+                if anomaly_img.shape[0] == 1:
+                    anomaly_img = anomaly_img.squeeze(0)
+                axes[1].imshow(anomaly_img.numpy(), cmap='gray', vmin=0, vmax=1)
+                axes[1].set_title('With Anomaly', fontsize=10)
+                axes[1].axis('off')
+                
+                # Mask
+                mask = masks[img_idx].cpu()
+                if mask.shape[0] == 1:
+                    mask = mask.squeeze(0)
+                axes[2].imshow(mask.numpy(), cmap='hot', vmin=0, vmax=1)
+                axes[2].set_title('Anomaly Mask', fontsize=10)
+                axes[2].axis('off')
+                
+                # Add main title
+                fig.suptitle(f'Training Sample {saved_count + 1}', fontsize=12)
+                
+                # Adjust layout
+                plt.tight_layout()
+                
+                # Save combined image
+                save_path = os.path.join(save_dir, f'train_sample_{saved_count + 1:02d}.png')
+                plt.savefig(save_path, dpi=150, bbox_inches='tight', pad_inches=0.1)
+                plt.close()
+            else:
+                # If no anomalies, just save the clean image
+                clean_img = clean_images[img_idx].cpu()
+                if clean_img.shape[0] == 1:
+                    clean_img = clean_img.squeeze(0)
+                
+                plt.figure(figsize=(4, 10))
+                plt.imshow(clean_img.numpy(), cmap='gray', vmin=0, vmax=1)
+                plt.title(f'Training Sample {saved_count + 1}')
+                plt.axis('off')
+                save_path = os.path.join(save_dir, f'train_sample_{saved_count + 1:02d}.png')
+                plt.savefig(save_path, dpi=100, bbox_inches='tight', pad_inches=0.1)
+                plt.close()
+            
+            saved_count += 1
+            if saved_count >= num_samples:
+                break
+    
+    print(f"Saved {saved_count} training samples to {save_dir}")
+    if has_anomalies:
+        print(f"  - Combined images showing: Original | With Anomaly | Mask")
+
+
+def train_experiment(config, experiment_name, base_output_dir, train_img_saved=False):
     """Train a single experiment configuration"""
     
     # Create directories
@@ -83,6 +175,12 @@ def train_experiment(config, experiment_name, base_output_dir):
         shuffle=True,
         num_workers=config['num_workers']
     )
+    
+    # Save sample training images only for the first experiment
+    if not train_img_saved:
+        train_img_dir = os.path.join(base_output_dir, 'train_img')
+        os.makedirs(train_img_dir, exist_ok=True)
+        save_training_samples(train_loader, train_img_dir, num_samples=5)
     
     # Update config with checkpoint directory
     config_with_checkpoint = config.copy()
@@ -180,7 +278,7 @@ def main():
     base_config = {
         'device': device,
         'batch_size': 16,
-        'num_epochs': 10,
+        'num_epochs': 20,  # Production training
         'lr': 1e-3,
         'image_size': (176, 976),
         'use_synthetic_anomalies': True,  # Disable synthetic anomalies
@@ -202,18 +300,19 @@ def main():
     # Get loss configurations
     loss_configs = setup_loss_configs()
     
-    # Define experiments (only baseline model)
+    # Define experiments (only enhanced model with MSE)
     experiments = [
-        ('baseline', 'mse'),
-        ('baseline', 'mse_ssim'),
-        ('baseline', 'focal_freq'), 
-        ('baseline', 'mse_focal_freq'),
-        ('baseline', 'mse_ssim_focal_freq')
+        ('enhanced', 'mse'),
+        # ('enhanced', 'mse_ssim'),
+        # ('enhanced', 'focal_freq'), 
+        # ('enhanced', 'mse_focal_freq'),
+        # ('enhanced', 'mse_ssim_focal_freq')
     ]
     
     # Store results for comparison
     all_histories = {}
     all_results = {}
+    train_img_saved = False  # Track if training images have been saved
     
     # Run experiments
     for architecture, loss_name in experiments:
@@ -229,8 +328,9 @@ def main():
         # Train experiment
         try:
             experiment_dir, train_history, eval_results = train_experiment(
-                config, experiment_name, str(session_dir)
+                config, experiment_name, str(session_dir), train_img_saved
             )
+            train_img_saved = True  # Mark that training images have been saved
             print(f"\nExperiment {experiment_name} completed successfully!")
             print(f"Results saved to: {experiment_dir}")
             

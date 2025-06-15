@@ -77,13 +77,30 @@ class EnhancedAutoencoder(nn.Module):
         b = self.bottleneck(e_final)
         
         # Decoding with skip connections
+        # Helper function to match sizes for skip connections
+        def match_size(upsampled, skip):
+            if upsampled.shape[2:] != skip.shape[2:]:
+                # Adjust size using interpolation
+                upsampled = F.interpolate(upsampled, size=skip.shape[2:], 
+                                        mode='bilinear', align_corners=False)
+            return upsampled
+        
         # Use precise transposed convolution for upsampling
         b_up = self.bottleneck_upsample(b)  # x2 upsampling
+        b_up = match_size(b_up, e5)
         d5 = self.dec5(torch.cat([b_up, e5], dim=1))
-        d4 = self.dec4(torch.cat([self.upsample(d5), e4], dim=1))
-        d3 = self.dec3(torch.cat([self.upsample(d4), e3], dim=1))
-        d2 = self.dec2(torch.cat([self.upsample(d3), e2], dim=1))
-        d1 = self.dec1(torch.cat([self.upsample(d2), e1], dim=1))
+        
+        d4_up = match_size(self.upsample(d5), e4)
+        d4 = self.dec4(torch.cat([d4_up, e4], dim=1))
+        
+        d3_up = match_size(self.upsample(d4), e3)
+        d3 = self.dec3(torch.cat([d3_up, e3], dim=1))
+        
+        d2_up = match_size(self.upsample(d3), e2)
+        d2 = self.dec2(torch.cat([d2_up, e2], dim=1))
+        
+        d1_up = match_size(self.upsample(d2), e1)
+        d1 = self.dec1(torch.cat([d1_up, e1], dim=1))
         
         return torch.sigmoid(self.final(d1))
     
