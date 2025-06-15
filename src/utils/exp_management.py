@@ -17,7 +17,7 @@ def create_experiment_name(architecture, loss_name):
 
 def setup_loss_configs():
     """Setup different loss configurations for experiments"""
-    from losses import MSELoss, SSIMLoss, MultiScaleSSIMLoss, SobelGradientLoss, FocalFrequencyLoss
+    from losses import MSELoss, SSIMLoss, MultiScaleSSIMLoss as MS_SSIMLoss, SobelGradientLoss, FocalFrequencyLoss
     
     loss_configs = {
         'mse': {
@@ -36,11 +36,11 @@ def setup_loss_configs():
         'mse_ssim': {
             'mse': {
                 'class': MSELoss,
-                'weight': 0.5
+                'weight': 0.2
             },
             'ssim': {
                 'class': SSIMLoss,
-                'weight': 0.5,
+                'weight': 0.8,
                 'params': {'window_size': 11}
             }
         },
@@ -114,6 +114,77 @@ def setup_loss_configs():
             'sobel': {
                 'class': SobelGradientLoss,
                 'weight': 0.2
+            }
+        },
+        'ms_ssim': {
+            'ms_ssim': {
+                'class': MS_SSIMLoss,
+                'weight': 1.0,
+                'params': {'window_size': 11}
+            }
+        },
+        'mse_ms_ssim': {
+            'mse': {
+                'class': MSELoss,
+                'weight': 0.4
+            },
+            'ms_ssim': {
+                'class': MS_SSIMLoss,
+                'weight': 0.6,
+                'params': {'window_size': 11}
+            }
+        },
+        'sobel': {
+            'sobel': {
+                'class': SobelGradientLoss,
+                'weight': 1.0
+            }
+        },
+        'mse_sobel': {
+            'mse': {
+                'class': MSELoss,
+                'weight': 0.5
+            },
+            'sobel': {
+                'class': SobelGradientLoss,
+                'weight': 0.5
+            }
+        },
+        'ssim_sobel': {
+            'ssim': {
+                'class': SSIMLoss,
+                'weight': 0.6,
+                'params': {'window_size': 11}
+            },
+            'sobel': {
+                'class': SobelGradientLoss,
+                'weight': 0.4
+            }
+        },
+        'ms_ssim_sobel': {
+            'ms_ssim': {
+                'class': MS_SSIMLoss,
+                'weight': 0.6,
+                'params': {'window_size': 11}
+            },
+            'sobel': {
+                'class': SobelGradientLoss,
+                'weight': 0.4
+            }
+        },
+        'mse_ms_ssim_sobel': {
+            'mse': {
+                'class': MSELoss,
+                'weight': 0.3
+            },
+            'ms_ssim': {
+                'class': MS_SSIMLoss,
+                'weight': 0.4,
+                'params': {'window_size': 11}
+            },
+            'sobel': {
+                'class': SobelGradientLoss,
+                'weight': 0.3
             }
         }
     }

@@ -278,7 +278,7 @@ def main():
     base_config = {
         'device': device,
         'batch_size': 16,
-        'num_epochs': 20,  # Production training
+        'num_epochs': 100,  # Production training
         'lr': 1e-3,
         'image_size': (176, 976),
         'use_synthetic_anomalies': True,  # Disable synthetic anomalies
@@ -300,13 +300,36 @@ def main():
     # Get loss configurations
     loss_configs = setup_loss_configs()
     
-    # Define experiments (only enhanced model with MSE)
+    # Define experiments - all available loss combinations
+    # experiments = [
+    #     # Basic losses
+    #     ('baseline', 'mse'),
+    #     ('baseline', 'ssim'),
+    #     ('baseline', 'ms_ssim'),
+    #     ('baseline', 'sobel'),
+        
+    #     # Two-component combinations
+    #     ('baseline', 'mse_ssim'),
+    #     ('baseline', 'mse_ms_ssim'),
+    #     ('baseline', 'mse_sobel'),
+    #     ('baseline', 'ssim_sobel'),
+    #     ('baseline', 'ms_ssim_sobel'),
+        
+    #     # Three-component combinations
+    #     ('baseline', 'mse_ms_ssim_sobel'),
+    #     ('baseline', 'mse_ssim_focal_freq'),
+        
+    #     # With focal frequency
+    #     ('baseline', 'focal_freq'),
+    #     ('baseline', 'mse_focal_freq'),
+        
+    #     # Comprehensive (4 components)
+    #     ('baseline', 'comprehensive'),
+    # ]
+    
+    # You can uncomment specific experiments to run:
     experiments = [
-        ('enhanced', 'mse'),
-        # ('enhanced', 'mse_ssim'),
-        # ('enhanced', 'focal_freq'), 
-        # ('enhanced', 'mse_focal_freq'),
-        # ('enhanced', 'mse_ssim_focal_freq')
+        ('baseline', 'sobel'),  # Testing L1 norm version
     ]
     
     # Store results for comparison

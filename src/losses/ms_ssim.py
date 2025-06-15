@@ -3,6 +3,12 @@ Multi-Scale SSIM Loss
 ====================
 
 Multi-scale structural similarity for capturing both fine details and global structure.
+
+This module provides two implementations:
+1. MultiScaleSSIMLoss - Standard implementation (recommended)
+2. AdvancedMultiScaleSSIMLoss - Advanced version with more configuration options
+
+For most use cases, MultiScaleSSIMLoss is recommended due to its stability and simplicity.
 """
 
 import torch
@@ -12,12 +18,13 @@ from typing import Optional, List, Tuple
 from .base import BaseLoss
 
 
-class SimpleMultiScaleSSIMLoss(BaseLoss):
-    """Multi-Scale Structural Similarity Index Loss
+class AdvancedMultiScaleSSIMLoss(BaseLoss):
+    """Advanced Multi-Scale Structural Similarity Index Loss
     
-    This loss function computes SSIM at multiple scales to capture both 
-    fine-grained details and global structure. It's particularly effective
-    for images where both local and global features are important.
+    This is an advanced implementation with more features and configuration options.
+    It computes SSIM at multiple scales to capture both fine-grained details and 
+    global structure. Features include custom scale weights, different downsampling
+    methods, and more precise calculations.
     
     Args:
         weight (float): Overall weight for this loss component. Default: 1.0
@@ -285,10 +292,11 @@ class SimpleMultiScaleSSIMLoss(BaseLoss):
 
 
 class MultiScaleSSIMLoss(BaseLoss):
-    """Simplified Multi-Scale SSIM Loss for single channel images
+    """Multi-Scale SSIM Loss
     
-    A streamlined implementation that focuses on stability and ease of use.
-    Replaces the complex version with a simpler, more robust implementation.
+    Standard implementation of Multi-Scale Structural Similarity Index Loss.
+    This version is optimized for stability and ease of use, making it the 
+    recommended choice for most applications.
     
     Args:
         num_scales (int): Number of scales to use (default: 3)
@@ -397,3 +405,7 @@ class MultiScaleSSIMLoss(BaseLoss):
         return (f"{self.__class__.__name__}("
                 f"num_scales={self.num_scales}, "
                 f"window_size={self.window_size})")
+
+
+# For backward compatibility, you can still import the old name
+SimpleMultiScaleSSIMLoss = AdvancedMultiScaleSSIMLoss

@@ -40,4 +40,4 @@ class SobelGradientLoss(BaseLoss):
         target_grad_y = F.conv2d(target, sobel_y, padding=1, groups=channels)
         target_grad = torch.sqrt(target_grad_x**2 + target_grad_y**2 + 1e-8)
         
-        return F.mse_loss(pred_grad, target_grad)
+        return F.l1_loss(pred_grad, target_grad)
