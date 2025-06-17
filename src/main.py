@@ -12,6 +12,7 @@ import os
 import json
 import multiprocessing
 from pathlib import Path
+import matplotlib.pyplot as plt
 
 # Import modular components
 from models import BaselineAutoencoder, EnhancedAutoencoder
@@ -19,6 +20,63 @@ from losses import MSELoss, SSIMLoss, MultiScaleSSIMLoss, SobelGradientLoss, Foc
 from datasets import MVTecDataset
 from utils import SyntheticAnomalyGenerator, LatentSpaceAnalyzer, train_model
 from visualization import AnomalyVisualizer
+
+
+def plot_loss_curves(train_history, save_dir, experiment_name):
+    """Plot and save training loss curves"""
+    epochs = range(1, len(train_history['total_loss']) + 1)
+    
+    # Create figure with subplots
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 10))
+    
+    # Plot 1: Total loss and component losses
+    ax1.plot(epochs, train_history['total_loss'], 'b-', label='Total Loss', linewidth=2)
+    
+    # Plot component losses
+    colors = ['r', 'g', 'm', 'c', 'y', 'k']
+    for i, (loss_name, values) in enumerate(train_history['component_losses'].items()):
+        color = colors[i % len(colors)]
+        ax1.plot(epochs, values, f'{color}--', label=f'{loss_name}', linewidth=1.5)
+    
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.set_title(f'{experiment_name} - Loss Curves')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # Plot 2: Loss weights over time
+    for i, (loss_name, _) in enumerate(train_history['component_losses'].items()):
+        weights = [w[loss_name] for w in train_history['weights']]
+        color = colors[i % len(colors)]
+        ax2.plot(epochs, weights, f'{color}-', label=f'{loss_name} weight', linewidth=1.5)
+    
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Weight')
+    ax2.set_title('Loss Weights Evolution')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    ax2.set_ylim(0, 1.1)
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    plot_path = os.path.join(save_dir, 'loss_curves.png')
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    # Also save a simpler plot with just the total loss
+    plt.figure(figsize=(8, 6))
+    plt.plot(epochs, train_history['total_loss'], 'b-', linewidth=2)
+    plt.xlabel('Epoch')
+    plt.ylabel('Total Loss')
+    plt.title(f'{experiment_name} - Total Loss')
+    plt.grid(True, alpha=0.3)
+    
+    simple_plot_path = os.path.join(save_dir, 'total_loss_curve.png')
+    plt.savefig(simple_plot_path, dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    print(f"Loss curves saved to {plot_path}")
 
 
 def main():
@@ -132,23 +190,54 @@ def main():
             num_workers=config['num_workers']
         )
         
+        # Create category-specific directory
+        category_dir = os.path.join(config['save_path'], category)
+        os.makedirs(category_dir, exist_ok=True)
+        
+        # Create history subdirectory
+        history_dir = os.path.join(category_dir, 'history')
+        os.makedirs(history_dir, exist_ok=True)
+        
+        # Update config with checkpoint directory
+        config_with_checkpoint = config.copy()
+        config_with_checkpoint['checkpoint_dir'] = os.path.join(category_dir, 'checkpoints')
+        
         # Train model
-        model, train_history = train_model(model, train_loader, config)
+        model, train_history = train_model(model, train_loader, config_with_checkpoint)
         
         # Save final model
-        torch.save(model.state_dict(), f"{config['save_path']}/{category}_final_model.pth")
+        model_path = os.path.join(category_dir, 'final_model.pth')
+        torch.save(model.state_dict(), model_path)
+        print(f"Model saved to {model_path}")
         
-        # Save training history
-        history_path = f"{config['save_path']}/{category}_training_history.json"
-        with open(history_path, 'w') as f:
-            # Convert history to serializable format
-            serializable_history = {
-                'total_loss': train_history['total_loss'],
-                'component_losses': train_history['component_losses'],
-                'weights': [{k: float(v) for k, v in w.items()} for w in train_history['weights']]
-            }
-            json.dump(serializable_history, f, indent=2)
-        print(f"Training history saved to {history_path}")
+        # Save training history as CSV
+        import pandas as pd
+        
+        # Prepare data for CSV
+        history_data = {
+            'epoch': list(range(1, len(train_history['total_loss']) + 1)),
+            'total_loss': train_history['total_loss']
+        }
+        
+        # Add component losses
+        for loss_name, values in train_history['component_losses'].items():
+            history_data[f'{loss_name}_loss'] = values
+        
+        # Add weights
+        for i, weights_dict in enumerate(train_history['weights']):
+            for loss_name, weight in weights_dict.items():
+                if f'{loss_name}_weight' not in history_data:
+                    history_data[f'{loss_name}_weight'] = []
+                history_data[f'{loss_name}_weight'].append(weight)
+        
+        # Create DataFrame and save as CSV
+        df = pd.DataFrame(history_data)
+        csv_path = os.path.join(history_dir, 'training_history.csv')
+        df.to_csv(csv_path, index=False)
+        print(f"Training history saved to {csv_path}")
+        
+        # Plot and save loss curves
+        plot_loss_curves(train_history, history_dir, f"{config['architecture']}_{category}")
         
         # Test on available test images (optional)
         print("\nTesting on available images...")

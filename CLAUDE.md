@@ -5,263 +5,122 @@
 ## 語言偏好
 請使用繁體中文回應所有對話和說明。
 
-## 專案概述
+## 專案快速概述
 
-這是一個基於重建模型的無監督異常檢測系統，專為工業缺陷檢測設計。系統僅使用正常影像訓練自編碼器，透過分析重建誤差來檢測異常。專案實作了模組化架構，支援多種損失函數、合成異常生成和完整的評估指標。
+**無監督異常檢測系統** - 使用自編碼器進行工業缺陷檢測
+- 核心原理：僅用正常影像訓練，透過重建誤差檢測異常
+- 模組化架構，易於擴展和實驗
 
-## 專案結構（模組化版本）
+## 關鍵檔案位置
 
 ```
 src/
-├── main.py                 # 主訓練程式
-├── losses/                 # 損失函數模組
-│   ├── base.py            # 基礎損失類別
-│   ├── mse.py             # MSE 損失
-│   ├── ssim.py            # SSIM 損失
-│   ├── ms_ssim.py         # Multi-Scale SSIM 損失
-│   ├── sobel.py           # Sobel 梯度損失
-│   ├── focal_frequency.py # Focal Frequency 損失
-│   └── manager.py         # 模組化損失管理器
-├── models/                 # 模型架構
-│   ├── baseline.py        # 基礎自編碼器
-│   └── enhanced.py        # 增強型自編碼器（U-Net風格）
-├── datasets/              # 資料集載入器
-│   └── mvtec.py          # MVTec AD 資料集
-├── utils/                 # 工具函數
-│   ├── synthetic_anomaly.py  # 合成異常生成器
-│   ├── latent_analyzer.py    # 潛在空間分析器
-│   └── training.py           # 訓練相關函數
-├── visualization/         # 視覺化工具
-│   └── visualizer.py     # 異常視覺化器
-├── test/                  # 測試檔案
-│   └── test_modular.py   # 模組化測試
-└── backup/               # 原始檔案備份（v1-v4）
+├── main.py                    # 主訓練入口
+├── main_experiments.py        # 實驗管理（MSE vs Focal Frequency）
+├── models/
+│   ├── baseline.py           # 標準自編碼器（無跳躍連接）
+│   └── enhanced.py           # U-Net 風格自編碼器（有跳躍連接）
+├── losses/
+│   ├── manager.py            # 損失函數管理器
+│   └── [各種損失函數實作]
+└── utils/
+    └── training.py           # 訓練循環實作
 ```
 
-## 架構設計
+## 重要技術特點
 
-### 核心組件
+1. **支援單通道灰階影像**（已驗證所有模組支援）
+2. **可變影像尺寸**（預設 1024×1024，可調整）
+3. **模組化損失函數系統**（可自由組合不同損失）
+4. **合成異常生成**（訓練時可選）
+5. **多種架構選擇**：
+   - `baseline`：標準 5 層下採樣自編碼器
+   - `enhanced`：U-Net 風格（有跳躍連接），6 層下採樣
+   - `compact`：4 層下採樣，保留更多空間資訊
+   - `compact_unet`：4 層下採樣 + 跳躍連接
 
-1. **模組化損失函數框架 (ModularLossManager)**
-   - **MSE Loss**：像素級重建精度
-   - **SSIM Loss**：結構相似性保留，包含詳細實作與參數驗證
-   - **Multi-Scale SSIM Loss**：多尺度結構相似性，同時捕捉局部細節與全局結構
-   - **Focal Frequency Loss**：動態聚焦於難以重建的頻率成分
-   - **Sobel Gradient Loss**：邊緣資訊保留
-   - 支援靈活的權重配置和組合測試
-   - 所有損失函數繼承自 `BaseLoss`，統一權重管理
+## 已知問題與注意事項
 
-2. **雙重網路架構**
-   - **BaselineAutoencoder**：無跳躍連接的標準自編碼器，強制資訊壓縮
-   - **EnhancedAutoencoder**：具有 U-Net 風格跳躍連接，精確缺陷定位
-   - 兩種架構都支援可變輸入尺寸（預設 1024×1024）
+1. **LatentSpaceAnalyzer 未整合**：在 main.py 中創建但未使用
+2. **EnhancedAutoencoder 缺少 input_size 參數**：初始化時無法指定尺寸
+3. **評估功能簡單**：evaluate_model 只計算 MSE，未計算 AUROC
 
-3. **合成異常生成器 (SyntheticAnomalyGenerator)**
-   - 生成亮點/暗點異常，外觀真實
-   - 橢圓形狀，邊緣平滑過渡
-   - 可配置大小和強度變化
-   - 支援批次處理
+## 快速操作指令
 
-4. **潛在空間分析器 (LatentSpaceAnalyzer)**
-   - 多層特徵提取（來自編碼器中間層）
-   - L2 距離計算高層語義差異
-   - 無需預訓練網路的領域特定特徵學習
-
-5. **異常視覺化器 (AnomalyVisualizer)**
-   - 視覺化原始影像、重建影像和異常熱圖
-   - 異常分數儲存功能
-   - 批次處理支援
-
-## 主要特色
-
-- **影像尺寸**：支援任意尺寸，預設 1024×1024 像素（灰階單通道）
-- **模組化設計**：便於實驗不同配置和擴展功能
-- **訓練模式**：支援有/無合成異常的訓練
-- **保守資料增強**：縮放係數 0.95-1.05
-- **綜合異常評分**：結合重建誤差和潛在空間分析
-- **單通道優化**：所有組件皆已驗證支援單通道影像處理
-- **全英文程式碼**：註解和文檔使用英文，適合生產環境
-
-## 常用指令
-
-### 訓練模組化版本
 ```bash
-cd src
-python main.py
+# 訓練單一模型
+cd src && python main.py
+
+# 執行實驗比較（4 種組合）
+cd src && python main_experiments.py
+
+# 執行測試
+cd src/test && python test_modular.py
 ```
 
-### 執行測試
-```bash
-cd src/test
-python test_modular.py
-```
+## 常見任務快速參考
 
-### 訓練舊版模型（備份檔案）
-```bash
-# v4 版本（最新的單檔案版本）
-python src/backup/anomaly_detection_v4.py
-
-# v3 版本
-python src/backup/anomaly_detection_v3.py
-```
-
-## 配置設定
-
-主要配置參數（在 `src/main.py` 中）：
-```python
-config = {
-    'device': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-    'batch_size': 16,
-    'num_epochs': 100,
-    'lr': 1e-3,
-    'image_size': (1024, 1024),  # 支援任意尺寸
-    'architecture': 'enhanced',    # 'baseline' 或 'enhanced'
-    'use_synthetic_anomalies': True,
-    'loss_config': {
-        # MSE Loss: 基本像素級重建
-        'mse': {
-            'class': MSELoss,
-            'weight': 0.3
-        },
-        # SSIM Loss: 結構相似性保留
-        'ssim': {
-            'class': SSIMLoss,
-            'weight': 0.3,
-            'params': {'window_size': 11, 'sigma': 1.5}
-        },
-        # Focal Frequency Loss: 動態聚焦難重建區域
-        'focal_freq': {
-            'class': FocalFrequencyLoss,
-            'weight': 0.2,
-            'params': {'alpha': 1.0, 'patch_factor': 1}
-        },
-        # Sobel Gradient Loss: 邊緣保留
-        'sobel': {
-            'class': SobelGradientLoss,
-            'weight': 0.2
-        }
-    },
-    'save_path': './models'
-}
-```
-
-### 範例配置
-
-1. **僅使用 MSE + SSIM（快速訓練）**
+### 修改損失函數組合
+編輯 main.py 中的 `loss_config`：
 ```python
 'loss_config': {
     'mse': {'class': MSELoss, 'weight': 0.5},
-    'ssim': {'class': SSIMLoss, 'weight': 0.5, 'params': {'window_size': 11}}
+    'ssim': {'class': SSIMLoss, 'weight': 0.5}
 }
 ```
 
-2. **強調頻率域（適合紋理影像）**
+### 切換模型架構
+修改 config 中的 `'architecture'`：
+- `'baseline'`：標準自編碼器
+- `'enhanced'`：U-Net 風格
+
+### 調整影像尺寸
+修改 config 中的 `'image_size'`：
 ```python
-'loss_config': {
-    'mse': {'class': MSELoss, 'weight': 0.2},
-    'focal_freq': {'class': FocalFrequencyLoss, 'weight': 0.5, 'params': {'alpha': 2.0}},
-    'sobel': {'class': SobelGradientLoss, 'weight': 0.3}
-}
+'image_size': (256, 256)  # 或任意正方形尺寸
 ```
 
-3. **多尺度 SSIM 重點**
-```python
-'loss_config': {
-    'mse': {'class': MSELoss, 'weight': 0.3},
-    'ms_ssim': {'class': MultiScaleSSIMLoss, 'weight': 0.5, 'params': {'num_scales': 3}},
-    'sobel': {'class': SobelGradientLoss, 'weight': 0.2}
-}
-```
-
-## 擴展指南
-
-### 新增自訂損失函數
-
-1. 在 `src/losses/` 建立新檔案：
-```python
-# src/losses/custom_loss.py
-from .base import BaseLoss
-
-class CustomLoss(BaseLoss):
-    def __init__(self, weight=1.0, custom_param=0.5):
-        super().__init__(weight)
-        self.custom_param = custom_param
-    
-    def forward(self, pred, target):
-        # 實作損失計算
-        loss = ...
-        return loss
-```
-
-2. 在 `src/losses/__init__.py` 中導入：
-```python
-from .custom_loss import CustomLoss
-```
-
-3. 在配置中使用：
-```python
-'loss_config': {
-    'custom': {'class': CustomLoss, 'weight': 0.3, 'params': {'custom_param': 0.7}}
-}
-```
-
-### 新增模型架構
-
-1. 在 `src/models/` 建立新檔案
-2. 確保模型有 `forward()` 方法
-3. 在 `src/models/__init__.py` 中導入
-
-## 實驗設計流程
-
-1. **階段一：基準建立**
-   - 使用標準自編碼器測試各種損失組合
-   - 評估重建品質和異常檢測效能
-
-2. **階段二：合成異常整合**
-   - 實作真實缺陷生成
-   - 比較有/無合成異常的效能
-
-3. **階段三：架構比較**
-   - 評估標準與跳躍連接變體
-   - 分析不同異常尺度的表現
-
-4. **階段四：損失函數優化**
-   - 測試個別損失組件
-   - 探索加權組合
-
-## 最新更新（模組化版本）
-
-1. **完整模組化重構**
-   - 將單一檔案拆分為功能明確的模組
-   - 保持與 v4 版本完全相同的功能
-   - 提升代碼可維護性和可擴展性
-
-2. **改進的專案結構**
-   - 清晰的目錄組織
-   - 統一的 API 設計
-   - 獨立的測試框架
-
-3. **支援彈性配置**
-   - 可變影像尺寸支援
-   - 動態 CPU 工作執行緒配置
-   - 易於新增自訂組件
-
-4. **增強的 MS-SSIM 實作**
-   - 簡化版本提升穩定性
-   - 修正梯度流問題
-   - 支援所有影像尺寸
+## MVTec AD 資料集路徑
+- 主要路徑：`/home/yclai/vscode_project/Anomaly_Detection/MVTec_AD_dataset`
+- 測試類別：`grid`（網格）
 
 ## 相依套件
+- PyTorch、torchvision、numpy、PIL、matplotlib、scipy、tqdm、scikit-learn、opencv-python
 
-- PyTorch（建議使用 CUDA 支援）
-- torchvision
-- numpy
-- PIL (Pillow)
-- matplotlib
-- scipy
-- tqdm
-- pathlib
-- scikit-learn（用於評估指標）
-- opencv-python（用於合成異常生成）
-- typing（用於型別提示）
-- multiprocessing（用於優化資料載入）
+## 待辦實驗項目（針對 176×976 非對稱影像）
+
+### 背景
+目前使用標準自編碼器架構在 176×976 的極端長條形影像上表現不佳，模型容易過度擬合（完全 mapping），無法有效檢測異常。需要針對非對稱影像設計特殊架構。
+
+### 實驗方案（按優先順序）
+
+1. **非對稱池化策略**
+   - 實作不同方向的池化層（如 (2,1) 和 (1,2)）
+   - 前期多做垂直池化，後期平衡池化
+   - 目標：保持特徵圖的相對對稱性
+
+2. **非對稱卷積核**
+   - 使用 (5,1)、(1,5)、(3,3) 等不同形狀的卷積核
+   - 分別捕捉垂直、水平和局部特徵
+   - 可並行處理後融合
+
+3. **多尺度特徵融合**
+   - 並行處理不同感受野的特徵
+   - 結合長條形和方形的特徵提取
+   - 在編碼器中期進行特徵融合
+
+4. **分割處理策略**
+   - 將 176×976 切成多個 176×176 的方塊
+   - 使用標準正方形架構處理每個方塊
+   - 在 latent space 合併所有方塊的特徵
+   - 優點：可重用現有架構
+
+5. **注意力機制**
+   - 加入空間注意力模組（如 CBAM）
+   - 讓模型自動學習關注重要區域
+   - 特別適合處理長條形影像的不均勻特徵分布
+
+### 實驗記錄
+- 2025/06/15：標準 enhanced autoencoder 在 176×976 影像上出現完全 mapping 問題
+- 2025/06/15：新增 compact 架構（4層下採樣），參數量從 3.27M 降至 0.92M
+- 待測試：上述五個方案
