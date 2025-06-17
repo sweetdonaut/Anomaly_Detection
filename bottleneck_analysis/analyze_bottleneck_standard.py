@@ -129,6 +129,50 @@ class StandardCompactAutoencoder(nn.Module):
         encoded = self.encoder(x)
         bottleneck_output = self.bottleneck(encoded)
         return self.expansion(bottleneck_output)
+    
+    def decode_from_bottleneck(self, bottleneck_features, target_size=None):
+        """Decode from bottleneck features to reconstruct image
+        
+        Args:
+            bottleneck_features: Tensor of shape (batch, 256, H, W)
+                                where H, W are the spatial dimensions after encoding
+                                This should be features after expansion (256 channels)
+            target_size: Optional tuple (H, W) for output size. If None, uses self.input_size
+        
+        Returns:
+            Reconstructed image tensor of shape (batch, 1, H, W)
+        """
+        # Decode
+        decoded = bottleneck_features
+        for i in range(0, len(self.decoder), 3):  # Process in groups of 3 (conv, bn, activation)
+            if i + 2 < len(self.decoder):
+                decoded = self.decoder[i](decoded)
+                decoded = self.decoder[i + 1](decoded)
+                decoded = self.decoder[i + 2](decoded)
+        
+        # Final reconstruction
+        output = torch.sigmoid(self.final(decoded))
+        
+        # Resize if needed
+        if target_size is not None and output.shape[2:] != target_size:
+            output = F.interpolate(output, size=target_size, mode='bilinear', align_corners=False)
+        
+        return output
+    
+    def decode_from_pure_bottleneck(self, pure_bottleneck_features, target_size=None):
+        """Decode from pure bottleneck features (before expansion)
+        
+        Args:
+            pure_bottleneck_features: Tensor of shape (batch, latent_dim, H, W)
+            target_size: Optional tuple (H, W) for output size
+        
+        Returns:
+            Reconstructed image tensor
+        """
+        # First expand to 256 channels
+        expanded = self.expansion(pure_bottleneck_features)
+        # Then decode
+        return self.decode_from_bottleneck(expanded, target_size=target_size)
 
 
 def load_and_preprocess_image(image_path):
@@ -308,6 +352,73 @@ def load_model(model_path, device='cuda'):
     return model
 
 
+def manipulate_bottleneck_features(model, image_tensor, manipulations, save_path, device='cuda'):
+    """Manipulate bottleneck features and decode to see effects
+    
+    Args:
+        model: The autoencoder model
+        image_tensor: Input image tensor
+        manipulations: List of tuples (name, function) where function takes bottleneck features
+        save_path: Path to save visualization
+        device: Device to run on
+    """
+    image_tensor = image_tensor.to(device)
+    
+    with torch.no_grad():
+        # Get original bottleneck features (after expansion for standard model)
+        bottleneck_features = model.get_latent_features(image_tensor)
+        
+        # Get original reconstruction
+        original_recon = model(image_tensor)
+        
+        # Create figure
+        n_manipulations = len(manipulations)
+        fig, axes = plt.subplots(2, n_manipulations + 2, figsize=(4 * (n_manipulations + 2), 8))
+        
+        # Show original image
+        axes[0, 0].imshow(image_tensor.cpu().numpy()[0, 0], cmap='gray')
+        axes[0, 0].set_title('Original Image')
+        axes[0, 0].axis('off')
+        
+        # Show original reconstruction
+        axes[0, 1].imshow(original_recon.cpu().numpy()[0, 0], cmap='gray')
+        axes[0, 1].set_title('Original Reconstruction')
+        axes[0, 1].axis('off')
+        
+        # Show bottleneck mean activation
+        axes[1, 0].imshow(bottleneck_features.mean(dim=1).cpu().numpy()[0], cmap='viridis')
+        axes[1, 0].set_title('Mean Bottleneck Activation')
+        axes[1, 0].axis('off')
+        
+        # Empty subplot
+        axes[1, 1].axis('off')
+        
+        # Apply manipulations
+        for i, (name, manipulation_fn) in enumerate(manipulations):
+            # Manipulate bottleneck features
+            manipulated_features = manipulation_fn(bottleneck_features.clone())
+            
+            # Decode from manipulated features
+            reconstructed = model.decode_from_bottleneck(manipulated_features, target_size=image_tensor.shape[2:])
+            
+            # Show manipulated reconstruction
+            axes[0, i + 2].imshow(reconstructed.cpu().numpy()[0, 0], cmap='gray')
+            axes[0, i + 2].set_title(f'{name}')
+            axes[0, i + 2].axis('off')
+            
+            # Show difference map
+            diff = torch.abs(reconstructed - original_recon)
+            axes[1, i + 2].imshow(diff.cpu().numpy()[0, 0], cmap='hot')
+            axes[1, i + 2].set_title(f'Difference Map')
+            axes[1, i + 2].axis('off')
+        
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Bottleneck manipulation visualization saved to: {save_path}")
+
+
 def main():
     """Main program"""
     # Set device
@@ -357,6 +468,24 @@ def main():
         for i, stat in enumerate(channel_stats[:10]):
             print(f"    Channel {stat['channel']:3d}: abs_mean={stat['abs_mean']:.4f}, "
                   f"std={stat['std']:.4f}")
+        
+        # Bottleneck manipulation experiments
+        print(f"  - Running bottleneck manipulation experiments...")
+        
+        # Define manipulation functions
+        manipulations = [
+            ("Zero All Features", lambda x: torch.zeros_like(x)),
+            ("Amplify 2x", lambda x: x * 2.0),
+            ("Reduce 0.5x", lambda x: x * 0.5),
+            ("Add Noise", lambda x: x + torch.randn_like(x) * 0.1),
+            ("Top 50% Channels", lambda x: x * (x.abs().mean(dim=(2,3), keepdim=True) > x.abs().mean(dim=(2,3), keepdim=True).median()).float()),
+            ("Threshold (>0.5)", lambda x: x * (x.abs() > 0.5).float()),
+        ]
+        
+        # Save manipulation results
+        manip_save_path = os.path.join(outputs_dir, f'bottleneck_manipulation_{img_file.replace(".tiff", "")}.png')
+        manipulate_bottleneck_features(model, img_tensor, manipulations, manip_save_path, device)
+        print(f"  - Saved manipulation results to: {manip_save_path}")
     
     # Save detailed statistics
     print("\nSaving detailed statistics...")
