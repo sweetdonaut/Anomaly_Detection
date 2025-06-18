@@ -59,3 +59,5 @@ Thumbs.db
 src/test/
 
 .gitignore
+
+triplet_dataset/

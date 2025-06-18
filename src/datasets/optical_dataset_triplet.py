@@ -38,13 +38,33 @@ class OpticalDatasetTriplet(Dataset):
         self.normalize = normalize
         
         # 收集所有 TIFF 檔案
-        self.data_path = os.path.join(root_dir, mode, 'good')
-        if not os.path.exists(self.data_path):
-            raise ValueError(f"Data path not found: {self.data_path}")
-        
-        self.file_list = [f for f in os.listdir(self.data_path) if f.endswith('.tiff')]
-        if not self.file_list:
-            raise ValueError(f"No TIFF files found in {self.data_path}")
+        if mode == 'test':
+            # For test mode, collect files from all subdirectories
+            test_path = os.path.join(root_dir, mode)
+            self.file_list = []
+            
+            if os.path.exists(test_path):
+                # Walk through all subdirectories
+                for root, dirs, files in os.walk(test_path):
+                    for file in files:
+                        if file.endswith('.tiff'):
+                            # Store relative path from root_dir
+                            rel_path = os.path.relpath(os.path.join(root, file), root_dir)
+                            self.file_list.append(rel_path)
+            
+            if not self.file_list:
+                raise ValueError(f"No TIFF files found in {test_path}")
+                
+            self.file_list.sort()  # Sort for consistent ordering
+        else:
+            # For train mode, keep original behavior
+            self.data_path = os.path.join(root_dir, mode, 'good')
+            if not os.path.exists(self.data_path):
+                raise ValueError(f"Data path not found: {self.data_path}")
+            
+            self.file_list = [os.path.join(mode, 'good', f) for f in os.listdir(self.data_path) if f.endswith('.tiff')]
+            if not self.file_list:
+                raise ValueError(f"No TIFF files found in {self.data_path}")
         
         print(f"Found {len(self.file_list)} files in {mode} set")
         
@@ -65,7 +85,7 @@ class OpticalDatasetTriplet(Dataset):
             - 'filename': 檔案名稱
         """
         # 載入 4 通道 TIFF 影像
-        file_path = os.path.join(self.data_path, self.file_list[idx])
+        file_path = os.path.join(self.root_dir, self.file_list[idx])
         tiff_data = tifffile.imread(file_path)
         
         # 確保資料格式正確

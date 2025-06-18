@@ -243,7 +243,7 @@ def train_experiment(config, experiment_name, base_output_dir, train_img_saved=F
         batch_size=config['batch_size'],
         shuffle=True,
         num_workers=config['num_workers'],
-        pin_memory=True
+        pin_memory=False if str(config['device']) == "mps" else True
     )
     
     test_loader = DataLoader(
@@ -251,7 +251,7 @@ def train_experiment(config, experiment_name, base_output_dir, train_img_saved=F
         batch_size=config['batch_size'],
         shuffle=False,
         num_workers=config['num_workers'],
-        pin_memory=True
+        pin_memory=False if str(config['device']) == "mps" else True
     )
     
     # Save sample training images only for the first experiment
@@ -289,15 +289,21 @@ def train_experiment(config, experiment_name, base_output_dir, train_img_saved=F
     plot_loss_curves(compatible_history, dirs['history'], experiment_name)
     
     # Evaluate on test set
-    eval_results = evaluate_on_test_set(model, config, test_loader, experiment_name, dirs)
+    # Check if target_category is specified in config
+    target_category = config.get('target_category', None)
+    eval_results = evaluate_on_test_set(model, config, test_loader, experiment_name, dirs, target_category)
     
     print(f"\nTriplet experiment {experiment_name} completed!")
     return dirs['experiment'], train_history, eval_results
 
 
-def evaluate_on_test_set(model, config, test_loader, experiment_name, dirs):
-    """Evaluate triplet model on test set with comprehensive visualization"""
-    print("\nEvaluating on test set...")
+def evaluate_on_test_set(model, config, test_loader, experiment_name, dirs, target_category=None):
+    """Evaluate triplet model on test set with comprehensive visualization
+    
+    Args:
+        target_category: If specified, only visualize this category (e.g., 'bent')
+    """
+    print(f"\nEvaluating on test set{f' (category: {target_category})' if target_category else ''}...")
     
     # Setup visualization directories
     vis_dir = os.path.join(dirs['experiment'], 'visualizations')
@@ -337,7 +343,16 @@ def evaluate_on_test_set(model, config, test_loader, experiment_name, dirs):
             # Visualize all images in batch (or first 5)
             num_to_viz = min(output.shape[0], 5)
             for i in range(num_to_viz):
-                # Skip test_sample visualization as requested
+                # Get filename to check category
+                filename = batch_data['filename'][i]
+                base_filename = os.path.splitext(os.path.basename(filename))[0]
+                
+                # Extract category from filename (e.g., "bent_000#88_324" -> "bent")
+                category = base_filename.split('_')[0]
+                
+                # Skip if target_category is specified and doesn't match
+                if target_category and category != target_category:
+                    continue
                 
                 # Get images
                 target_img = target[i].cpu().squeeze()
@@ -389,9 +404,7 @@ def evaluate_on_test_set(model, config, test_loader, experiment_name, dirs):
                     ax.axis('off')
                     axes_list.append(ax)
                 
-                # Check if filename contains patch coordinates
-                filename = batch_data['filename'][i]
-                base_filename = os.path.splitext(os.path.basename(filename))[0]
+                # filename and base_filename already extracted above
                 
                 # If file has patch coordinates, draw rectangle on the full images
                 if '#' in filename:
@@ -429,10 +442,15 @@ def evaluate_on_test_set(model, config, test_loader, experiment_name, dirs):
                         
                         # Extract patches from all images
                         # Calculate boundaries
-                        y_start = max(0, center_y - half_size)
-                        y_end = min(target_img.shape[0], center_y + half_size)
-                        x_start = max(0, center_x - half_size)
-                        x_end = min(target_img.shape[1], center_x + half_size)
+                        # Ensure center coordinates are within image bounds
+                        img_h, img_w = target_img.shape
+                        center_x = min(max(half_size, center_x), img_w - half_size)
+                        center_y = min(max(half_size, center_y), img_h - half_size)
+                        
+                        y_start = center_y - half_size
+                        y_end = center_y + half_size
+                        x_start = center_x - half_size
+                        x_end = center_x + half_size
                         
                         # Extract patches
                         target_patch = target_img[y_start:y_end, x_start:x_end]
@@ -524,18 +542,20 @@ def main():
     
     # Get device and setup
     device = get_device()
-    optimal_workers = min(8, os.cpu_count() - 1)
+    # Reduce workers for better performance
+    optimal_workers = 0 if str(device) == "mps" else min(2, os.cpu_count() - 1)
     print(f"Using {optimal_workers} workers (detected {os.cpu_count()} CPUs)")
     
     # Base configuration for triplet training
     base_config = {
         'device': device,
-        'batch_size': 8,  # Smaller batch size for triplet data
-        'num_epochs': 2,  # Very short for quick testing
+        'batch_size': 64,  # Smaller batch size for triplet data
+        'num_epochs': 100,  # Very short for quick testing
         'lr': 1e-3,
         'image_size': (976, 176),  # Note: H x W for triplet dataset
         'dataset_path': '../triplet_dataset',
-        'num_workers': optimal_workers
+        'num_workers': optimal_workers,
+        'target_category': 'bent'  # Only visualize 'bent' category
     }
     
     # Create output directory
@@ -555,7 +575,7 @@ def main():
     
     # Define triplet experiments - 只訓練一個模型配一個 loss
     experiments = [
-        ('baseline', 'trip_mse_ssim'),  # 只使用這個組合
+        ('standard_compact', 'trip_mse_ssim'),  # 只使用這個組合
     ]
     
     # Store results for comparison
