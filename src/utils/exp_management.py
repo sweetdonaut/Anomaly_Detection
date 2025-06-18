@@ -18,6 +18,7 @@ def create_experiment_name(architecture, loss_name):
 def setup_loss_configs():
     """Setup different loss configurations for experiments"""
     from losses import MSELoss, SSIMLoss, MultiScaleSSIMLoss as MS_SSIMLoss, SobelGradientLoss, FocalFrequencyLoss
+    from losses import TripletMSELoss, TripletSSIMLoss
     
     loss_configs = {
         'mse': {
@@ -185,6 +186,33 @@ def setup_loss_configs():
             'sobel': {
                 'class': SobelGradientLoss,
                 'weight': 0.3
+            }
+        },
+        # Triplet loss configurations
+        'trip_mse': {
+            'mse': {
+                'class': TripletMSELoss,
+                'weight': 1.0,
+                'params': {'reference_mode': 'both'}
+            }
+        },
+        'trip_ssim': {
+            'ssim': {
+                'class': TripletSSIMLoss,
+                'weight': 1.0,
+                'params': {'reference_mode': 'both'}
+            }
+        },
+        'trip_mse_ssim': {
+            'mse': {
+                'class': TripletMSELoss,
+                'weight': 0.5,
+                'params': {'reference_mode': 'both'}
+            },
+            'ssim': {
+                'class': TripletSSIMLoss,
+                'weight': 0.5,
+                'params': {'reference_mode': 'both'}
             }
         }
     }

@@ -11,6 +11,8 @@ from .ssim import SSIMLoss
 from .ms_ssim import MultiScaleSSIMLoss  # Using the simplified version for stability
 from .sobel import SobelGradientLoss
 from .focal_frequency import FocalFrequencyLoss
+from .triplet_mse import TripletMSELoss
+from .triplet_ssim import TripletSSIMLoss
 from .manager import ModularLossManager
 
 __all__ = [
@@ -20,5 +22,7 @@ __all__ = [
     'MultiScaleSSIMLoss',
     'SobelGradientLoss',
     'FocalFrequencyLoss',
+    'TripletMSELoss',
+    'TripletSSIMLoss',
     'ModularLossManager'
 ]
