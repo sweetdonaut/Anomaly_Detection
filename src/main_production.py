@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Import modular components
-from models import BaselineAutoencoder, EnhancedAutoencoder, CompactAutoencoder, CompactUNetAutoencoder, StandardCompactAutoencoder
+from models import BaselineAutoencoder, EnhancedAutoencoder, CompactAutoencoder, CompactUNetAutoencoder, StandardCompactAutoencoder, C3k2Autoencoder
 from datasets import OpticalDataset
 from losses import ModularLossManager
 from utils import (
@@ -155,6 +155,8 @@ def train_experiment(config, experiment_name, base_output_dir, train_img_saved=F
         model = CompactUNetAutoencoder(input_size=config['image_size'])
     elif config['architecture'] == 'standard_compact':
         model = StandardCompactAutoencoder(input_size=config['image_size'])
+    elif config['architecture'] == 'c3k2':
+        model = C3k2Autoencoder(input_size=config['image_size'])
     else:
         raise ValueError(f"Unknown architecture: {config['architecture']}")
     
@@ -337,7 +339,7 @@ def main():
     
     # You can uncomment specific experiments to run:
     experiments = [
-        ('standard_compact', 'mse'),  # Test the standard compact architecture without residual
+        ('c3k2', 'mse'),  # Test the C3k2 architecture
     ]
     
     # Store results for comparison

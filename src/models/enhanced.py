@@ -104,6 +104,24 @@ class EnhancedAutoencoder(nn.Module):
         
         return torch.sigmoid(self.final(d1))
     
+    def get_features(self, x):
+        """Extract features from the encoder (before bottleneck)"""
+        # Encoding path
+        e1 = self.enc1(x)
+        e2 = self.enc2(self.pool(e1))
+        e3 = self.enc3(self.pool(e2))
+        e4 = self.enc4(self.pool(e3))
+        e5 = self.enc5(self.pool(e4))
+        e_final = self.enc_final(e5)
+        return e_final
+    
+    def get_latent(self, x):
+        """Extract latent representation (after bottleneck)"""
+        # Get encoder features
+        e_final = self.get_features(x)
+        # Apply bottleneck
+        return self.bottleneck(e_final)
+    
     def get_multi_level_features(self, x):
         """Extract features from multiple encoder levels"""
         features = []

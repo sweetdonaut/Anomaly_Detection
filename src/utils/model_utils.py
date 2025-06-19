@@ -42,14 +42,15 @@ class LatentSpaceAnalyzer:
                 batch = batch.to(self.device)
                 
                 # Get features based on model type
-                if hasattr(self.model, 'get_multi_level_features'):
-                    # Enhanced model with multi-level features
-                    feat_dict = self.model.get_multi_level_features(batch)
-                    # Use the deepest features
-                    feat = feat_dict['level_3']  # or combine multiple levels
-                elif hasattr(self.model, 'get_latent_features'):
-                    # Baseline model
-                    feat = self.model.get_latent_features(batch)
+                if hasattr(self.model, 'get_latent'):
+                    # Standard method - use latent representation
+                    feat = self.model.get_latent(batch)
+                    # Flatten if needed
+                    if len(feat.shape) > 2:
+                        feat = F.adaptive_avg_pool2d(feat, 1).squeeze(-1).squeeze(-1)
+                elif hasattr(self.model, 'get_multi_level_features'):
+                    # U-Net models with multi-level features
+                    feat = self.model.get_multi_level_features(batch)
                 else:
                     raise ValueError("Model doesn't have feature extraction method")
                 
@@ -71,11 +72,15 @@ class LatentSpaceAnalyzer:
             test_batch = test_batch.to(self.device)
             
             # Get features
-            if hasattr(self.model, 'get_multi_level_features'):
-                feat_dict = self.model.get_multi_level_features(test_batch)
-                test_features = feat_dict['level_3']
-            elif hasattr(self.model, 'get_latent_features'):
-                test_features = self.model.get_latent_features(test_batch)
+            if hasattr(self.model, 'get_latent'):
+                # Standard method - use latent representation
+                test_features = self.model.get_latent(test_batch)
+                # Flatten if needed
+                if len(test_features.shape) > 2:
+                    test_features = F.adaptive_avg_pool2d(test_features, 1).squeeze(-1).squeeze(-1)
+            elif hasattr(self.model, 'get_multi_level_features'):
+                # U-Net models with multi-level features
+                test_features = self.model.get_multi_level_features(test_batch)
             else:
                 raise ValueError("Model doesn't have feature extraction method")
             

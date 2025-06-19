@@ -143,8 +143,3 @@ class StandardCompactAutoencoder(nn.Module):
         """Extract latent representation (after bottleneck)"""
         encoded = self.encoder(x)
         return self.bottleneck(encoded)
-    
-    def get_bottleneck_output(self, x):
-        """Get the bottleneck output before expansion"""
-        encoded = self.encoder(x)
-        return self.bottleneck(encoded)

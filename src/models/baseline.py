@@ -89,7 +89,11 @@ class BaselineAutoencoder(nn.Module):
         
         return x
     
-    def get_latent_features(self, x):
-        """Extract latent space features"""
+    def get_features(self, x):
+        """Extract features from the encoder (before bottleneck)"""
+        return self.encoder(x)
+    
+    def get_latent(self, x):
+        """Extract latent representation (after bottleneck)"""
         encoded = self.encoder(x)
         return self.bottleneck(encoded)

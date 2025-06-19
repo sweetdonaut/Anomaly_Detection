@@ -139,7 +139,7 @@ class CompactAutoencoder(nn.Module):
     def get_latent(self, x):
         """Extract latent representation (after bottleneck)"""
         encoded = self.encoder(x)
-        return self.bottleneck(encoded) + encoded
+        return self.bottleneck(encoded)
 
 
 class CompactUNetAutoencoder(nn.Module):
@@ -210,6 +210,23 @@ class CompactUNetAutoencoder(nn.Module):
         
         # Output
         return torch.sigmoid(self.final(d1))
+    
+    def get_features(self, x):
+        """Extract features from the encoder (before bottleneck)"""
+        # Encoding path
+        e1 = self.enc1(x)
+        e2 = self.enc2(self.pool(e1))
+        e3 = self.enc3(self.pool(e2))
+        e4 = self.enc4(self.pool(e3))
+        # Return the pooled e4 (input to bottleneck)
+        return self.pool(e4)
+    
+    def get_latent(self, x):
+        """Extract latent representation (after bottleneck)"""
+        # Get encoder features
+        features = self.get_features(x)
+        # Apply bottleneck
+        return self.bottleneck(features)
     
     def get_multi_level_features(self, x):
         """Extract features from multiple encoder levels (useful for analysis)"""
