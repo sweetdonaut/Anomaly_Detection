@@ -18,7 +18,7 @@ def create_experiment_name(architecture, loss_name):
 def setup_loss_configs():
     """Setup different loss configurations for experiments"""
     from losses import MSELoss, SSIMLoss, MultiScaleSSIMLoss as MS_SSIMLoss, SobelGradientLoss, FocalFrequencyLoss
-    from losses import TripletMSELoss, TripletSSIMLoss
+    from losses import TripletMSELoss, TripletSSIMLoss, VAELoss
     
     loss_configs = {
         'mse': {
@@ -211,6 +211,27 @@ def setup_loss_configs():
             },
             'ssim': {
                 'class': TripletSSIMLoss,
+                'weight': 0.5,
+                'params': {'reference_mode': 'both'}
+            }
+        },
+        # VAE loss configuration
+        'vae': {
+            'vae': {
+                'class': VAELoss,
+                'weight': 1.0,
+                'params': {'kl_weight': 0.0001}  # Small KL weight to prevent collapse
+            }
+        },
+        # Triplet VAE loss configuration (combining VAE with triplet MSE)
+        'trip_vae': {
+            'vae': {
+                'class': VAELoss,
+                'weight': 0.5,
+                'params': {'kl_weight': 0.0001}
+            },
+            'mse': {
+                'class': TripletMSELoss,
                 'weight': 0.5,
                 'params': {'reference_mode': 'both'}
             }

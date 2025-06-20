@@ -63,8 +63,28 @@ def train_model(model, train_loader, config):
                 input_images = images
             
             # Forward pass
-            recon = model(input_images)
-            loss_dict = criterion(recon, target)
+            output = model(input_images)
+            
+            # Handle VAE case which returns (recon, mu, logvar)
+            if isinstance(output, tuple) and len(output) == 3:
+                recon, mu, logvar = output
+                # VAE needs special loss handling
+                if 'vae' in config.get('loss_config', {}):
+                    # Use VAE loss
+                    vae_loss = criterion.losses['vae']
+                    total_loss, recon_loss, kl_loss = vae_loss(recon, target, mu, logvar)
+                    loss_dict = {
+                        'total': total_loss,
+                        'recon': recon_loss,
+                        'kl': kl_loss
+                    }
+                else:
+                    # Use standard losses on reconstruction only
+                    loss_dict = criterion(recon, target)
+            else:
+                # Standard autoencoder
+                recon = output
+                loss_dict = criterion(recon, target)
             
             # Backward pass
             optimizer.zero_grad()
@@ -142,7 +162,13 @@ def evaluate_model(model, test_loader, loss_manager=None, device='cuda'):
             images = images.to(device)
             
             # Forward pass
-            recon = model(images)
+            output = model(images)
+            
+            # Handle VAE case
+            if isinstance(output, tuple) and len(output) == 3:
+                recon, mu, logvar = output
+            else:
+                recon = output
             
             # Calculate reconstruction error as anomaly score
             if loss_manager is not None:

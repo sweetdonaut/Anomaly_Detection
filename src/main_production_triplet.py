@@ -12,7 +12,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Import modular components
-from models import BaselineAutoencoder, EnhancedAutoencoder, CompactAutoencoder, CompactUNetAutoencoder, StandardCompactAutoencoder
+from models import BaselineAutoencoder, EnhancedAutoencoder, CompactAutoencoder, CompactUNetAutoencoder, StandardCompactAutoencoder, C3k2Autoencoder, VariationalAutoencoder
 from datasets import OpticalDatasetTriplet
 from torch.utils.data import DataLoader
 from losses.triplet_manager import TripletLossManager
@@ -134,10 +134,51 @@ def train_triplet_model(model, train_loader, config):
                 
                 # Forward pass - input is target
                 optimizer.zero_grad()
-                output = model(target)
+                model_output = model(target)
+                
+                # Handle VAE output (returns tuple with mu, logvar)
+                if isinstance(model_output, tuple) and len(model_output) == 3:
+                    output, mu, logvar = model_output
+                else:
+                    output = model_output
                 
                 # Calculate loss - pass batch_data dict for reference access
-                total_loss, loss_components = loss_manager(output, batch_data)
+                # Special handling for VAE with triplet loss
+                if 'vae' in config.get('loss_config', {}) and isinstance(model_output, tuple):
+                    # For VAE, we need to handle the VAE loss separately
+                    vae_loss_fn = loss_manager.losses.get('vae') if hasattr(loss_manager.losses, 'get') else loss_manager.losses['vae'] if 'vae' in loss_manager.losses else None
+                    if vae_loss_fn:
+                        # Calculate VAE loss
+                        vae_total, vae_recon, vae_kl = vae_loss_fn(output, target, mu, logvar)
+                        
+                        # Calculate other losses (like triplet MSE) on reconstruction only
+                        other_losses = {}
+                        other_total = torch.tensor(0.0, device=config['device'])
+                        
+                        for name, loss_fn in loss_manager.losses.items():
+                            if name != 'vae':
+                                loss_value = loss_fn(output, batch_data)
+                                if isinstance(loss_value, tuple):
+                                    loss_value, _ = loss_value
+                                other_losses[name] = loss_value
+                                other_total += loss_value
+                        
+                        # Combine losses
+                        weights = loss_manager.get_weights()
+                        vae_weight = weights.get('vae', 0.5)
+                        total_loss = vae_total * vae_weight + other_total
+                        loss_components = {
+                            'vae': vae_total,
+                            'vae_recon': vae_recon,
+                            'vae_kl': vae_kl,
+                            **other_losses
+                        }
+                    else:
+                        # Fallback to standard loss calculation
+                        total_loss, loss_components = loss_manager(output, batch_data)
+                else:
+                    # Standard loss calculation
+                    total_loss, loss_components = loss_manager(output, batch_data)
                 
                 # Backward pass
                 total_loss.backward()
@@ -211,6 +252,10 @@ def train_experiment(config, experiment_name, base_output_dir, train_img_saved=F
         model = CompactUNetAutoencoder(input_size=config['image_size'])
     elif config['architecture'] == 'standard_compact':
         model = StandardCompactAutoencoder(input_size=config['image_size'])
+    elif config['architecture'] == 'c3k2':
+        model = C3k2Autoencoder(input_size=config['image_size'])
+    elif config['architecture'] == 'vae':
+        model = VariationalAutoencoder(input_size=config['image_size'])
     else:
         raise ValueError(f"Unknown architecture: {config['architecture']}")
     
@@ -329,10 +374,27 @@ def evaluate_on_test_set(model, config, test_loader, experiment_name, dirs, targ
             batch_data['reference2'] = batch_data['reference2'].to(config['device'])
             
             # Forward pass
-            output = model(target)
+            model_output = model(target)
+            
+            # Handle VAE output
+            if isinstance(model_output, tuple) and len(model_output) == 3:
+                output, mu, logvar = model_output
+            else:
+                output = model_output
             
             # Calculate loss
-            loss, _ = loss_manager(output, batch_data)
+            # Special handling for VAE in evaluation
+            if 'vae' in config.get('loss_config', {}) and isinstance(model_output, tuple):
+                # Skip VAE loss during evaluation, just use other losses
+                loss = torch.tensor(0.0, device=config['device'])
+                for name, loss_fn in loss_manager.losses.items():
+                    if name != 'vae':
+                        loss_value = loss_fn(output, batch_data)
+                        if isinstance(loss_value, tuple):
+                            loss_value, _ = loss_value
+                        loss += loss_value
+            else:
+                loss, _ = loss_manager(output, batch_data)
             total_loss += loss.item()
             
             # Calculate anomaly scores (MSE between output and references)
@@ -550,7 +612,7 @@ def main():
     base_config = {
         'device': device,
         'batch_size': 64,  # Smaller batch size for triplet data
-        'num_epochs': 100,  # Very short for quick testing
+        'num_epochs': 2,  # Quick test with 2 epochs
         'lr': 1e-3,
         'image_size': (976, 176),  # Note: H x W for triplet dataset
         'dataset_path': '../triplet_dataset',
@@ -573,9 +635,10 @@ def main():
     # Get loss configurations
     loss_configs = setup_loss_configs()
     
-    # Define triplet experiments - 只訓練一個模型配一個 loss
+    # Define triplet experiments - test c3k2 and vae
     experiments = [
-        ('standard_compact', 'trip_mse_ssim'),  # 只使用這個組合
+        ('c3k2', 'trip_mse_ssim'),  # Test C3k2 architecture
+        ('vae', 'trip_vae'),        # Test VAE architecture with triplet VAE loss
     ]
     
     # Store results for comparison

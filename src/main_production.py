@@ -11,7 +11,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Import modular components
-from models import BaselineAutoencoder, EnhancedAutoencoder, CompactAutoencoder, CompactUNetAutoencoder, StandardCompactAutoencoder, C3k2Autoencoder
+from models import BaselineAutoencoder, EnhancedAutoencoder, CompactAutoencoder, CompactUNetAutoencoder, StandardCompactAutoencoder, C3k2Autoencoder, VariationalAutoencoder
 from datasets import OpticalDataset
 from losses import ModularLossManager
 from utils import (
@@ -157,6 +157,8 @@ def train_experiment(config, experiment_name, base_output_dir, train_img_saved=F
         model = StandardCompactAutoencoder(input_size=config['image_size'])
     elif config['architecture'] == 'c3k2':
         model = C3k2Autoencoder(input_size=config['image_size'])
+    elif config['architecture'] == 'vae':
+        model = VariationalAutoencoder(input_size=config['image_size'])
     else:
         raise ValueError(f"Unknown architecture: {config['architecture']}")
     
@@ -255,7 +257,13 @@ def evaluate_on_test_set(model, config, transform, experiment_name, dirs):
                 break
                 
             images = images.to(config['device'])
-            reconstructions = model(images)
+            output = model(images)
+            
+            # Handle VAE output
+            if isinstance(output, tuple) and len(output) == 3:
+                reconstructions, _, _ = output
+            else:
+                reconstructions = output
             
             # Calculate error maps
             error_maps = torch.mean((images - reconstructions) ** 2, dim=1)
@@ -288,7 +296,7 @@ def main():
     base_config = {
         'device': device,
         'batch_size': 16,
-        'num_epochs': 100,  # Production training
+        'num_epochs': 2,  # Quick test with 2 epochs
         'lr': 1e-3,
         'image_size': (176, 976),
         'use_synthetic_anomalies': True,
@@ -340,6 +348,7 @@ def main():
     # You can uncomment specific experiments to run:
     experiments = [
         ('c3k2', 'mse'),  # Test the C3k2 architecture
+        ('vae', 'vae'),   # Test the VAE architecture with VAE loss
     ]
     
     # Store results for comparison
