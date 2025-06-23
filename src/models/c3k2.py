@@ -234,12 +234,6 @@ class C3k2Autoencoder(nn.Module):
         self.enc_conv4 = Conv(128, 256, 3, 2, 1)  # /2
         self.enc_c3k2_4 = C3k2(256, 256, n=3, shortcut=True, e=0.5)
         
-        # Calculate encoder output size dynamically
-        with torch.no_grad():
-            dummy_input = torch.zeros(1, 1, *input_size)
-            encoder_output = self._encode(dummy_input)
-            self.encoder_output_size = encoder_output.shape[2:]
-        
         # Standard bottleneck WITHOUT residual connection (following standard_compact design)
         self.bottleneck = nn.Sequential(
             nn.Conv2d(256, latent_dim, 1),
@@ -254,37 +248,33 @@ class C3k2Autoencoder(nn.Module):
             nn.SiLU(inplace=True),
         )
         
-        # Decoder with C3k2 blocks
-        self.dec_upconv1 = nn.ConvTranspose2d(256, 128, 3, 2, 1, output_padding=1)  # x2
+        # Decoder with C3k2 blocks (YOLO-style upsampling)
+        self.dec_upconv1 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            Conv(256, 128, 3, 1, 1)
+        )
         self.dec_c3k2_1 = C3k2(128, 128, n=3, shortcut=True, e=0.5)
         
-        self.dec_upconv2 = nn.ConvTranspose2d(128, 64, 3, 2, 1, output_padding=1)  # x2
+        self.dec_upconv2 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            Conv(128, 64, 3, 1, 1)
+        )
         self.dec_c3k2_2 = C3k2(64, 64, n=2, shortcut=True, e=0.5)
         
-        self.dec_upconv3 = nn.ConvTranspose2d(64, 32, 3, 2, 1, output_padding=1)  # x2
+        self.dec_upconv3 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            Conv(64, 32, 3, 1, 1)
+        )
         self.dec_c3k2_3 = C3k2(32, 32, n=2, shortcut=True, e=0.5)
         
-        self.dec_upconv4 = nn.ConvTranspose2d(32, 32, 3, 2, 1, output_padding=1)  # x2
+        self.dec_upconv4 = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            Conv(32, 32, 3, 1, 1)
+        )
         
         # Final convolution to reconstruct single channel
         self.final = nn.Conv2d(32, 1, 1)
         
-        # Initialize weights
-        self._initialize_weights()
-    
-    def _initialize_weights(self):
-        """Initialize weights using Xavier initialization for conv layers"""
-        for m in self.modules():
-            if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
-                if hasattr(m, 'weight') and m.weight is not None:
-                    nn.init.xavier_normal_(m.weight)
-                if hasattr(m, 'bias') and m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm2d):
-                if hasattr(m, 'weight') and m.weight is not None:
-                    nn.init.constant_(m.weight, 1)
-                if hasattr(m, 'bias') and m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
     
     def _encode(self, x):
         """Encoding path"""
@@ -330,10 +320,6 @@ class C3k2Autoencoder(nn.Module):
         
         # Decode
         decoded = self._decode(expanded)
-        
-        # Ensure output matches input size
-        if decoded.shape[2:] != x.shape[2:]:
-            decoded = F.interpolate(decoded, size=x.shape[2:], mode='bilinear', align_corners=False)
         
         # Final reconstruction
         output = torch.sigmoid(self.final(decoded))
