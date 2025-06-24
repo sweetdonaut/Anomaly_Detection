@@ -15,6 +15,7 @@ from .triplet_mse import TripletMSELoss
 from .triplet_ssim import TripletSSIMLoss
 from .vae_loss import VAELoss, AnnealedVAELoss, CyclicalVAELoss
 from .manager import ModularLossManager
+from .difference_denoiser_loss import DifferenceDenoiserLoss, DifferenceDenoiserDetailedLoss, DifferenceDenoiserTripletLoss
 
 __all__ = [
     'BaseLoss',
@@ -28,5 +29,8 @@ __all__ = [
     'VAELoss',
     'AnnealedVAELoss',
     'CyclicalVAELoss',
-    'ModularLossManager'
+    'ModularLossManager',
+    'DifferenceDenoiserLoss',
+    'DifferenceDenoiserDetailedLoss',
+    'DifferenceDenoiserTripletLoss'
 ]
